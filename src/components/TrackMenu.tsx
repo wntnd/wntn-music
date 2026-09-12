@@ -8,11 +8,14 @@ import {
   IconPlaylist,
   IconMicrophone2,
   IconCheck,
+  IconInfoCircle,
 } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
 import { usePlayer } from "../hooks/usePlayer";
+import { useDropUp } from "../hooks/useDropUp";
 import { meApi, playlistApi, type PlaylistMeta } from "../lib/api";
-import { slugify, type Track } from "../lib/tracks";
+import { slugify, trackPath, type Track } from "../lib/tracks";
+import { useDialogs } from "./Dialogs";
 
 /**
  * Per-track "…" menu: queue actions plus add-to-playlist with an inline filter
@@ -29,6 +32,8 @@ export default function TrackMenu({ track }: { track: Track }) {
   const [added, setAdded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const { anchorRef, placement } = useDropUp<HTMLDivElement>(open, picking ? 320 : 200);
+  const { run } = useDialogs();
 
   useEffect(() => {
     if (!open) return;
@@ -62,26 +67,25 @@ export default function TrackMenu({ track }: { track: Track }) {
 
   const addTo = async (playlistId: string) => {
     setBusy(true);
-    try {
-      await playlistApi.addTrack(playlistId, track.id);
-      setAdded(playlistId);
-      setTimeout(close, 700);
-    } finally {
-      setBusy(false);
-    }
+    const ok = await run(() => playlistApi.addTrack(playlistId, track.id));
+    setBusy(false);
+    if (!ok) return;
+    setAdded(playlistId);
+    setTimeout(close, 700);
   };
 
   const createAndAdd = async () => {
     const title = filter.trim() || `плейлист с ${track.title}`;
     setBusy(true);
-    try {
+    const created = await run(async () => {
       const { id } = await playlistApi.create({ title, isPublic: true });
       await playlistApi.addTrack(id, track.id);
-      setAdded(id);
-      setTimeout(close, 700);
-    } finally {
-      setBusy(false);
-    }
+      return id;
+    }, `плейлист «${title}» создан`);
+    setBusy(false);
+    if (!created) return;
+    setAdded(created);
+    setTimeout(close, 700);
   };
 
   const shown = playlists.filter((p) =>
@@ -90,17 +94,24 @@ export default function TrackMenu({ track }: { track: Track }) {
 
   return (
     <div ref={rootRef} className="relative">
-      <button
-        onClick={() => (open ? close() : setOpen(true))}
-        aria-label="ещё"
-        title="ещё"
-        className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-surface-hover hover:text-text"
-      >
-        <IconDots size={17} />
-      </button>
+      <div ref={anchorRef}>
+        <button
+          onClick={() => (open ? close() : setOpen(true))}
+          aria-label="ещё"
+          title="ещё"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className="grid h-9 w-9 place-items-center rounded-full text-muted transition-colors hover:bg-surface-hover hover:text-text sm:h-8 sm:w-8"
+        >
+          <IconDots size={17} />
+        </button>
+      </div>
 
       {open && (
-        <div className="absolute right-0 top-full z-40 mt-1 w-60 animate-dropdown-in overflow-hidden rounded-card border border-border bg-bg shadow-xl">
+        <div
+          role="menu"
+          className={`absolute right-0 z-40 w-60 animate-dropdown-in overflow-hidden rounded-card border border-border bg-bg shadow-xl ${placement}`}
+        >
           {picking ? (
             <div className="flex flex-col">
               <div className="relative border-b border-border">
@@ -170,6 +181,15 @@ export default function TrackMenu({ track }: { track: Track }) {
                 в очередь
               </MenuRow>
               <MenuRow
+                icon={<IconInfoCircle size={16} />}
+                onClick={() => {
+                  close();
+                  navigate(trackPath(track));
+                }}
+              >
+                страница трека
+              </MenuRow>
+              <MenuRow
                 icon={<IconMicrophone2 size={16} />}
                 onClick={() => {
                   close();
@@ -198,6 +218,7 @@ function MenuRow({
   return (
     <button
       onClick={onClick}
+      role="menuitem"
       className="flex items-center gap-2.5 px-3 py-2.5 text-left text-sm transition-colors hover:bg-surface-hover"
     >
       <span className="text-muted">{icon}</span>

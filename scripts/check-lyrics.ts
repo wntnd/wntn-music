@@ -24,3 +24,19 @@ const repeat = parseLyrics("[00:01.00][00:05.00]chorus\n");
 assert.equal(repeat.lines.length, 2);
 
 console.log("lyrics parser: all checks passed");
+
+// Russian plural agreement — the counters read wrong for 1 and 21
+import { plural } from "../src/lib/tracks.ts";
+const t = (n: number) => plural(n, "трек", "трека", "треков");
+assert.equal(t(1), "трек");
+assert.equal(t(2), "трека");
+assert.equal(t(4), "трека");
+assert.equal(t(5), "треков");
+assert.equal(t(11), "треков"); // the teens are all "many"
+assert.equal(t(14), "треков");
+assert.equal(t(21), "трек");
+assert.equal(t(22), "трека");
+assert.equal(t(51), "трек");
+assert.equal(t(111), "треков");
+assert.equal(t(0), "треков");
+console.log("plurals: all checks passed");

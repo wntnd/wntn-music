@@ -6,15 +6,18 @@ import {
   IconHeadphones,
   IconPlus,
   IconArrowBarToRight,
+  IconClock,
+  IconDisc,
 } from "@tabler/icons-react";
-import { slugify, type Track } from "../lib/tracks";
-import { trackApi, meApi, type TrackDetail } from "../lib/api";
+import { formatTime, slugify, type Track } from "../lib/tracks";
+import { trackApi, meApi, albumApi, type TrackDetail } from "../lib/api";
 import { usePlayer } from "../hooks/usePlayer";
 import { useAuth } from "../hooks/useAuth";
+import { useTitle } from "../hooks/useTitle";
 import LyricsPanel from "./LyricsPanel";
 import LyricsEdits from "./LyricsEdits";
 import LikeButton from "./LikeButton";
-import AddToPlaylist from "./AddToPlaylist";
+import TrackMenu from "./TrackMenu";
 import Comments from "./Comments";
 
 const KIND_RU: Record<string, string> = {
@@ -32,16 +35,24 @@ export default function TrackPage() {
   const [detail, setDetail] = useState<TrackDetail | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
   const [myArtistSlug, setMyArtistSlug] = useState<string | null>(null);
+  const [album, setAlbum] = useState<{ id: string; title: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useTitle(detail ? `${detail.title} — ${detail.author}` : null);
 
   useEffect(() => {
     if (!id) return;
     setDetail(null);
+    setAlbum(null);
     trackApi
       .get(id)
       .then((d) => {
         setDetail(d);
         setVersionId(d.primaryVersionId ?? d.versions[0]?.id ?? null);
+        if (d.albumId)
+          albumApi
+            .get(d.albumId)
+            .then((a) => setAlbum({ id: a.id, title: a.title }))
+            .catch(() => {});
       })
       .catch((e) => setError(e instanceof Error ? e.message : "ошибка"));
   }, [id]);
@@ -70,17 +81,23 @@ export default function TrackPage() {
 
   const asTrack = (song: string): Track => ({
     id: detail.id,
+    slug: detail.slug,
+    shortId: detail.shortId,
     title: detail.title,
     author: detail.author,
     cover,
     description: "",
     song,
+    plays: detail.plays,
+    duration: detail.duration,
+    features: detail.features,
   });
 
+  // Playing from the track page used to replace the whole queue with this one
+  // track, so "next" went nowhere. Keep whatever is queued; just play this.
   const playSelected = () => {
     if (!version?.url) return;
-    const t = asTrack(version.url);
-    play(t, [t]);
+    play(asTrack(version.url));
   };
 
   return (
@@ -115,9 +132,42 @@ export default function TrackPage() {
               </>
             )}
           </p>
-          <p className="mt-1 flex items-center gap-1 text-xs text-muted">
-            <IconHeadphones size={14} /> {detail.plays} прослушиваний
+          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+            <span className="flex items-center gap-1">
+              <IconHeadphones size={14} /> {detail.plays}
+            </span>
+            {detail.duration ? (
+              <span className="flex items-center gap-1">
+                <IconClock size={14} /> {formatTime(detail.duration)}
+              </span>
+            ) : null}
+            {album && (
+              <Link
+                to={`/album/${album.id}`}
+                className="flex items-center gap-1 hover:text-text hover:underline"
+              >
+                <IconDisc size={14} /> {album.title}
+              </Link>
+            )}
+            {detail.explicit && (
+              <span title="explicit" className="rounded border border-border px-1 font-mono">
+                E
+              </span>
+            )}
           </p>
+          {detail.genres.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {detail.genres.map((g) => (
+                <Link
+                  key={g}
+                  to={`/search?q=${encodeURIComponent(g)}`}
+                  className="rounded-card border border-border bg-surface px-2 py-0.5 text-xs text-muted transition-colors hover:text-text"
+                >
+                  {g}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {detail.versions.length > 1 && (
@@ -154,6 +204,11 @@ export default function TrackPage() {
           <div className="grid h-11 w-11 place-items-center rounded-card border border-border bg-surface">
             <LikeButton trackId={detail.id} size={20} />
           </div>
+          {version?.url && (
+            <div className="grid h-11 w-11 place-items-center rounded-card border border-border bg-surface">
+              <TrackMenu track={asTrack(version.url)} />
+            </div>
+          )}
         </div>
         <div className="flex gap-2">
           <button
@@ -171,7 +226,6 @@ export default function TrackPage() {
             <IconPlus size={16} /> в очередь
           </button>
         </div>
-        <AddToPlaylist trackId={detail.id} />
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-8">

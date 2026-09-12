@@ -1,10 +1,25 @@
 <!DOCTYPE html>
-<html lang="ru" class="dark">
+<html lang="ru">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>music wntn</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="wntn.music — музыка своих: треки, альбомы и плейлисты" />
+    <title>wntn.music</title>
+    <!-- theme before first paint: the class must exist by the time the body
+         paints, otherwise a light-theme user gets a dark flash on every load -->
+    <script>
+      (function () {
+        try {
+          document.documentElement.classList.toggle(
+            "dark",
+            localStorage.getItem("theme") !== "light",
+          );
+        } catch (e) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

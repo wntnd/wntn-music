@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { IconCheck, IconX, IconSearch, IconId, IconUsers, IconMicrophone2 } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
+import { useTitle } from "../hooks/useTitle";
 import SideNav from "./SideNav";
 import { useDialogs } from "./Dialogs";
 import {
@@ -24,7 +25,8 @@ export default function AdminPage() {
   const [artists, setArtists] = useState<AdminArtist[]>([]);
   const [query, setQuery] = useState("");
   const [ready, setReady] = useState(false);
-  const { confirm } = useDialogs();
+  const { confirm, toast } = useDialogs();
+  useTitle("админка");
 
   useEffect(() => {
     if (!loading && (!user || !user.isAdmin)) navigate("/");
@@ -54,7 +56,7 @@ export default function AdminPage() {
       await fn();
       await loadAll(query || undefined);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "ошибка");
+      toast(e instanceof Error ? e.message : "ошибка", "error");
     }
   };
 

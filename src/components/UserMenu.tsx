@@ -5,6 +5,7 @@ import {
   IconLibrary,
   IconMicrophone2,
   IconShieldCheck,
+  IconSettings,
   IconLogout,
   IconSun,
   IconMoon,
@@ -107,6 +108,9 @@ export default function UserMenu({
           </MenuLink>
           <MenuLink to="/studio" onClick={close} icon={<IconMicrophone2 size={17} />}>
             студия
+          </MenuLink>
+          <MenuLink to="/settings" onClick={close} icon={<IconSettings size={17} />}>
+            настройки
           </MenuLink>
           {user.isAdmin && (
             <MenuLink to="/admin" onClick={close} icon={<IconShieldCheck size={17} />}>

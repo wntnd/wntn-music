@@ -30,11 +30,14 @@ type PlayerState = {
   next: () => void;
   prev: () => void;
   seek: (t: number) => void;
+  /** Relative seek read off the audio element, so repeated taps accumulate. */
+  seekBy: (delta: number) => void;
   setVolume: (v: number) => void;
   playAt: (i: number) => void;
   addToQueue: (track: Track) => void;
   playNext: (track: Track) => void;
   removeFromQueue: (i: number) => void;
+  moveInQueue: (from: number, to: number) => void;
   clearQueue: () => void;
   syncMode: PlaybackSync;
   setSyncMode: (m: PlaybackSync) => void;
@@ -45,6 +48,18 @@ type PlayerState = {
 };
 
 export type RepeatMode = "off" | "all" | "one";
+
+/** Fisher-Yates over the queue indices, with the playing track pinned first so
+ *  turning shuffle on never cuts the song you're listening to. */
+function shuffledOrder(length: number, current: number): number[] {
+  const rest: number[] = [];
+  for (let i = 0; i < length; i++) if (i !== current) rest.push(i);
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return current >= 0 && current < length ? [current, ...rest] : rest;
+}
 
 const Ctx = createContext<PlayerState | null>(null);
 
@@ -72,7 +87,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const current = index >= 0 ? queue[index] ?? null : null;
 
-  const [shuffle, setShuffle] = useState(false);
+  // Shuffle is a *permutation of the queue*, not a dice roll per skip. Rolling
+  // a random index every next() replayed tracks and skipped others forever, and
+  // left prev() with nothing to walk back through.
+  const [shuffleOrder, setShuffleOrder] = useState<number[] | null>(null);
+  const shuffle = shuffleOrder !== null;
   const [repeat, setRepeat] = useState<RepeatMode>("off");
 
   const tabId = useRef(Math.random().toString(36).slice(2));
@@ -171,10 +190,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, index]);
 
+  // a shuffled order is a permutation of *this* queue — reshuffle when the
+  // queue grows or shrinks, otherwise it points at indices that moved
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  useEffect(() => {
+    setShuffleOrder((o) => (o === null ? null : shuffledOrder(queue.length, indexRef.current)));
+  }, [queue.length]);
+
   // load + play whenever the current track changes
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !current) return;
+    // the previous track's position and length would otherwise stay on screen
+    // until loadedmetadata fires — a visible jump on every skip
+    setCurrentTime(0);
+    setDuration(0);
     audio.src = current.song;
     audio.volume = volume;
     audio.load();
@@ -225,16 +256,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     else audio.pause();
   }
 
+  // The play order: the queue as-is, or the shuffled permutation when on.
+  const playOrder = shuffleOrder ?? queue.map((_, i) => i);
+  const orderPos = playOrder.indexOf(index);
+  const atOrderEnd = orderPos === playOrder.length - 1;
+
+  function step(dir: 1 | -1) {
+    if (!queue.length) return index;
+    if (orderPos === -1) return playOrder[dir === 1 ? 0 : playOrder.length - 1] ?? index;
+    return playOrder[(orderPos + dir + playOrder.length) % playOrder.length];
+  }
+
   function next() {
-    setIndex((i) => {
-      if (!queue.length) return i;
-      if (shuffle && queue.length > 1) {
-        let r = i;
-        while (r === i) r = Math.floor(Math.random() * queue.length);
-        return r;
-      }
-      return (i + 1) % queue.length;
-    });
+    setIndex(step(1));
   }
 
   // called when a track ends: repeat "one" replays, "off" stops at the last track
@@ -245,8 +279,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       void audio.play().catch(() => {});
       return;
     }
-    const isLast = !shuffle && index === queue.length - 1;
-    if (isLast && repeat === "off") {
+    if (atOrderEnd && repeat === "off") {
       audio?.pause();
       return;
     }
@@ -257,19 +290,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const audio = audioRef.current;
     if (audio && audio.currentTime > 3) {
       audio.currentTime = 0;
+      setCurrentTime(0);
       return;
     }
-    setIndex((i) => (queue.length ? (i - 1 + queue.length) % queue.length : i));
+    setIndex(step(-1));
   }
   nextRef.current = next;
   prevRef.current = prev;
   endRef.current = onTrackEnd;
 
   function seek(t: number) {
-    if (audioRef.current) {
-      audioRef.current.currentTime = t;
-      setCurrentTime(t);
-    }
+    const audio = audioRef.current;
+    if (!audio) return;
+    const max = Number.isFinite(audio.duration) ? audio.duration : t;
+    const clamped = Math.min(Math.max(t, 0), max);
+    audio.currentTime = clamped;
+    setCurrentTime(clamped);
+  }
+
+  // Relative seeks read the element, not React state: two arrow presses in the
+  // same tick would otherwise both compute from the same stale currentTime and
+  // land 5s away instead of 10.
+  function seekBy(delta: number) {
+    const audio = audioRef.current;
+    if (audio) seek(audio.currentTime + delta);
   }
 
   function playAt(i: number) {
@@ -306,6 +350,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const next = q.filter((_, n) => n !== i);
       if (i < index) setIndex((cur) => cur - 1);
       else if (i === index) setIndex((cur) => (cur >= next.length ? next.length - 1 : cur));
+      return next;
+    });
+  }
+
+  // Reorder by dragging in the queue. The playing track keeps playing: its
+  // index follows the move rather than the position staying put.
+  function moveInQueue(from: number, to: number) {
+    setQueue((q) => {
+      if (from === to || from < 0 || to < 0 || from >= q.length || to >= q.length) return q;
+      const next = [...q];
+      const [row] = next.splice(from, 1);
+      next.splice(to, 0, row);
+      setIndex((cur) => {
+        if (cur === from) return to;
+        if (from < cur && to >= cur) return cur - 1;
+        if (from > cur && to <= cur) return cur + 1;
+        return cur;
+      });
       return next;
     });
   }
@@ -396,11 +458,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     next,
     prev,
     seek,
+    seekBy,
     setVolume: setVol,
     playAt,
     addToQueue,
     playNext,
     removeFromQueue,
+    moveInQueue,
     clearQueue,
     syncMode,
     setSyncMode: (m: PlaybackSync) => {
@@ -408,7 +472,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       localStorage.setItem("playbackSync", m);
     },
     shuffle,
-    toggleShuffle: () => setShuffle((s) => !s),
+    toggleShuffle: () =>
+      setShuffleOrder((o) => (o ? null : shuffledOrder(queue.length, index))),
     repeat,
     cycleRepeat: () =>
       setRepeat((r) => (r === "off" ? "all" : r === "all" ? "one" : "off")),

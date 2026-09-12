@@ -1,6 +1,6 @@
-import { useNavigate } from "react-router-dom";
 import { IconHeart, IconHeartFilled } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
+import { useGoLogin } from "../hooks/useGoLogin";
 
 export default function LikeButton({
   trackId,
@@ -10,7 +10,7 @@ export default function LikeButton({
   size?: number;
 }) {
   const { user, likes, toggleLike } = useAuth();
-  const navigate = useNavigate();
+  const goLogin = useGoLogin();
   const liked = likes.has(trackId);
 
   return (
@@ -18,7 +18,7 @@ export default function LikeButton({
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (!user) return navigate("/login");
+        if (!user) return goLogin();
         void toggleLike(trackId).catch(() => {});
       }}
       aria-label={liked ? "убрать лайк" : "лайк"}

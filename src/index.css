@@ -53,6 +53,22 @@
     -webkit-font-smoothing: none;
     font-smooth: never;
   }
+
+  /* Tracking is size-specific: letters read too far apart as type grows, so
+     display text tightens with size instead of carrying one fixed value. */
+  .font-display {
+    letter-spacing: -0.015em;
+  }
+  .font-display.text-lg,
+  .font-display.text-xl {
+    letter-spacing: -0.02em;
+  }
+  .font-display.text-2xl,
+  .font-display.text-3xl,
+  .font-display.text-4xl {
+    letter-spacing: -0.03em;
+    line-height: 1.08;
+  }
 }
 
 /* thin, unobtrusive scrollbars */
@@ -100,6 +116,49 @@
     var(--surface) 63%
   );
   background-size: 200% 100%;
+}
+
+/* Controls that fade in on hover are unreachable on touch, where hover never
+   happens. They only hide themselves where a hover-capable pointer exists. */
+@media (hover: hover) {
+  .hover-reveal {
+    opacity: 0;
+  }
+  .group:hover .hover-reveal,
+  .hover-reveal:focus-visible,
+  .hover-reveal:focus-within {
+    opacity: 1;
+  }
+}
+/* the playing card keeps its control up whether or not a pointer is near */
+.hover-reveal[data-active="true"] {
+  opacity: 1;
+}
+
+/* Affordances that only make sense without a hover pointer (a camera badge on
+   editable artwork, say — the hover scrim never appears on a phone). */
+.touch-only {
+  display: none;
+}
+@media (hover: none) {
+  .touch-only {
+    display: grid;
+  }
+}
+
+/* Keyboard focus must be visible everywhere. Declared after the utilities so it
+   beats the `outline-none` on inputs, which otherwise kills the ring too. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Translucent chrome turns solid when the OS asks for less transparency. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: var(--bg) !important;
+    backdrop-filter: none !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

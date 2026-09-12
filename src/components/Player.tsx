@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   IconPlayerPlayFilled,
@@ -17,8 +17,17 @@ import {
   IconRepeatOnce,
   IconX,
   IconTrash,
+  IconGripVertical,
 } from "@tabler/icons-react";
 import { formatTime, slugify, trackPath } from "../lib/tracks";
+import {
+  capturePointer,
+  project,
+  rubberband,
+  spring,
+  VelocityTracker,
+  type SpringHandle,
+} from "../lib/motion";
 import { usePlayer } from "../hooks/usePlayer";
 import { useVirtualList } from "../hooks/useVirtualList";
 import { trackApi } from "../lib/api";
@@ -28,7 +37,7 @@ import EqBars from "./EqBars";
 import AudioVisualizer from "./AudioVisualizer";
 
 export default function Player() {
-  const { current } = usePlayer();
+  const { current, toggle, next, prev, seekBy, volume, setVolume } = usePlayer();
   const [expanded, setExpanded] = useState(false);
 
   // a collapsed player must never leave the page scroll-locked
@@ -39,11 +48,48 @@ export default function Player() {
     };
   }, [expanded]);
 
+  // Keyboard transport. Typing in a field must never skip a track, so anything
+  // originating in an input, textarea or contenteditable is left alone.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setExpanded(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return setExpanded(false);
+      // target is only an Element when something focusable has focus — it can
+      // also be the Document, which has no closest()
+      const el = e.target instanceof Element ? e.target : null;
+      if (el?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || !current) return;
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          toggle();
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          if (e.shiftKey) next();
+          else seekBy(5);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          if (e.shiftKey) prev();
+          else seekBy(-5);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          setVolume(Math.min(1, volume + 0.05));
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          setVolume(Math.max(0, volume - 0.05));
+          break;
+        case "m":
+        case "ь":
+          setVolume(volume > 0 ? 0 : 1);
+          break;
+      }
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [current, toggle, next, prev, seekBy, volume, setVolume]);
 
   if (!current) return null;
   return expanded ? (
@@ -75,6 +121,7 @@ function TransportControls({ size = "sm" }: { size?: "sm" | "lg" }) {
         onClick={toggleShuffle}
         data-active={shuffle}
         aria-label="перемешать"
+        aria-pressed={shuffle}
         title="перемешать"
         className={`grid ${side} place-items-center rounded-full text-muted transition-colors hover:bg-surface-hover hover:text-text data-[active=true]:text-accent`}
       >
@@ -147,56 +194,164 @@ function VolumeControl() {
   );
 }
 
-const SWIPE_THRESHOLD = 60;
+/**
+ * Seek bar you can grab. Dragging tracks the pointer 1:1 for the whole gesture
+ * — the label follows the finger, not the audio element, so scrubbing never
+ * fights the timeupdate stream. The mini bar used to have no seek at all.
+ */
+function SeekBar({ tall = false }: { tall?: boolean }) {
+  const { currentTime, duration, seek, seekBy } = usePlayer();
+  const railRef = useRef<HTMLDivElement>(null);
+  const [scrub, setScrub] = useState<number | null>(null);
 
-function MiniBar({ onExpand }: { onExpand: () => void }) {
-  const { current, isPlaying, currentTime, duration, toggle, next, prev } = usePlayer();
-  const touch = useRef<{ x: number; y: number } | null>(null);
-  // the offset lives in a ref: touchend must read the final value, and state
-  // updates are async, so a fast flick would otherwise read a stale 0
-  const dragRef = useRef(0);
-  const [drag, setDrag] = useState(0);
+  const at = (clientX: number) => {
+    const rail = railRef.current;
+    if (!rail || !duration) return 0;
+    const rect = rail.getBoundingClientRect();
+    return Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1) * duration;
+  };
 
-  if (!current) return null;
-  const progress = duration ? (currentTime / duration) * 100 : 0;
-
-  // On phones the bar carries play/pause only; swiping it left/right changes
-  // track, and everything else lives in the expanded player.
-  const onTouchStart = (e: React.TouchEvent) => {
-    const t = e.touches[0];
-    touch.current = { x: t.clientX, y: t.clientY };
-    dragRef.current = 0;
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (!touch.current || !e.touches[0]) return;
-    const t = e.touches[0];
-    const dx = t.clientX - touch.current.x;
-    // ignore mostly-vertical gestures so page scrolling still works
-    if (Math.abs(dx) > Math.abs(t.clientY - touch.current.y)) {
-      dragRef.current = dx;
-      setDrag(dx);
-    }
-  };
-  const onTouchEnd = () => {
-    const dx = dragRef.current;
-    if (dx <= -SWIPE_THRESHOLD) next();
-    else if (dx >= SWIPE_THRESHOLD) prev();
-    touch.current = null;
-    dragRef.current = 0;
-    setDrag(0);
-  };
+  const shown = scrub ?? currentTime;
+  const pct = duration ? (shown / duration) * 100 : 0;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-20 animate-fade-up overflow-hidden border-t border-border bg-bg/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-      <div className="h-0.5 w-full bg-surface-hover">
-        <div className="h-full bg-accent transition-[width]" style={{ width: `${progress}%` }} />
-      </div>
+    <div
+      ref={railRef}
+      onPointerDown={(e) => {
+        if (!duration) return;
+        e.stopPropagation();
+        capturePointer(e.currentTarget, e.pointerId);
+        setScrub(at(e.clientX));
+      }}
+      onPointerMove={(e) => scrub !== null && setScrub(at(e.clientX))}
+      onPointerUp={(e) => {
+        if (scrub === null) return;
+        seek(at(e.clientX));
+        setScrub(null);
+      }}
+      onPointerCancel={() => setScrub(null)}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowRight") seekBy(5);
+        if (e.key === "ArrowLeft") seekBy(-5);
+      }}
+      role="slider"
+      aria-label="перемотка"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(duration)}
+      aria-valuenow={Math.round(shown)}
+      aria-valuetext={`${formatTime(shown)} из ${formatTime(duration)}`}
+      tabIndex={0}
+      className={
+        "group/seek relative flex w-full cursor-pointer touch-none items-center " +
+        (tall ? "h-5" : "h-3")
+      }
+    >
       <div
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-        style={{ transform: drag ? `translateX(${drag / 3}px)` : undefined }}
-        className="mx-auto flex max-w-6xl items-center gap-3 px-3 py-2 transition-transform sm:px-4"
+        className={
+          "w-full overflow-hidden rounded-full bg-surface-hover " + (tall ? "h-1.5" : "h-0.5")
+        }
+      >
+        <div className="h-full bg-accent" style={{ width: `${pct}%` }} />
+      </div>
+      {/* the handle appears when it can be used — pointer nearby, or dragging */}
+      <span
+        data-dragging={scrub !== null}
+        style={{ left: `${pct}%` }}
+        className="pointer-events-none absolute -ml-1.5 h-3 w-3 rounded-full bg-accent opacity-0 transition-opacity group-hover/seek:opacity-100 data-[dragging=true]:opacity-100"
+      />
+    </div>
+  );
+}
+
+const SWIPE_COMMIT = 70;
+
+function MiniBar({ onExpand }: { onExpand: () => void }) {
+  const { current, isPlaying, toggle, next, prev } = usePlayer();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const springRef = useRef<SpringHandle | null>(null);
+  const drag = useRef<{ id: number; x: number; y: number; active: boolean; offset: number } | null>(
+    null,
+  );
+  const tracker = useRef(new VelocityTracker());
+  const [hint, setHint] = useState<"next" | "prev" | null>(null);
+
+  const setX = useCallback((x: number) => {
+    if (rowRef.current) rowRef.current.style.transform = `translateX(${x}px)`;
+  }, []);
+
+  useEffect(() => () => springRef.current?.stop(), []);
+
+  // Swiping the bar changes track. Pointer Events with capture keep the gesture
+  // alive past the element's edge, and the transform is written straight to the
+  // node — a CSS transition here is what made the bar lag behind the finger.
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return; // desktop has real buttons
+    if ((e.target as HTMLElement).closest("button, a, [role='slider']")) return;
+    // interrupt a running settle and carry on from wherever it is on screen
+    const from = springRef.current?.value() ?? 0;
+    springRef.current?.stop();
+    springRef.current = null;
+    drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, active: false, offset: from };
+    tracker.current.reset();
+    tracker.current.add(from);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || d.id !== e.pointerId) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!d.active) {
+      // 10px of hysteresis, and vertical intent stays with the page scroll
+      if (Math.abs(dx) < 10 || Math.abs(dy) > Math.abs(dx)) return;
+      d.active = true;
+      capturePointer(e.currentTarget, e.pointerId);
+    }
+    const x = d.offset + dx;
+    tracker.current.add(x);
+    setX(x);
+    setHint(x <= -20 ? "next" : x >= 20 ? "prev" : null);
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || d.id !== e.pointerId) return;
+    drag.current = null;
+    setHint(null);
+    if (!d.active) return;
+
+    const v = tracker.current.get();
+    const x = d.offset + (e.clientX - d.x);
+    // commit on where the flick was *going*, not where the finger stopped
+    const projected = x + project(v);
+    if (projected <= -SWIPE_COMMIT) next();
+    else if (projected >= SWIPE_COMMIT) prev();
+
+    springRef.current = spring({
+      from: x,
+      to: 0,
+      velocity: v,
+      damping: 0.8, // the gesture carried momentum, so a little bounce fits
+      response: 0.35,
+      onFrame: setX,
+      onRest: () => {
+        springRef.current = null;
+      },
+    });
+  };
+
+  if (!current) return null;
+
+  return (
+    <div className="glass fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-20 animate-fade-up overflow-hidden border-t border-border bg-bg/95 backdrop-blur md:bottom-0 md:pb-[env(safe-area-inset-bottom)]">
+      <SeekBar />
+      <div
+        ref={rowRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        className="mx-auto flex max-w-6xl touch-pan-y items-center gap-3 px-3 py-2 sm:px-4"
       >
         <button
           onClick={onExpand}
@@ -222,7 +377,7 @@ function MiniBar({ onExpand }: { onExpand: () => void }) {
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{current.title}</p>
             <p className="truncate text-xs text-muted">
-              {drag ? (drag < 0 ? "следующий →" : "← предыдущий") : current.author}
+              {hint === "next" ? "следующий →" : hint === "prev" ? "← предыдущий" : current.author}
             </p>
           </div>
         </button>
@@ -260,19 +415,20 @@ function MiniBar({ onExpand }: { onExpand: () => void }) {
   );
 }
 
-const DISMISS_THRESHOLD = 110;
+/** Past this much of the screen — or thrown hard enough — the sheet lets go. */
+const DISMISS_FRACTION = 0.25;
+const DISMISS_VELOCITY = 800;
 
 function FullPlayer({ onClose }: { onClose: () => void }) {
-  const { current, isPlaying, currentTime, duration, seek } = usePlayer();
+  const { current, isPlaying, currentTime, duration } = usePlayer();
   const [showQueue, setShowQueue] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
   const [lyrics, setLyrics] = useState<string | null>(null);
 
-  // pull-down-to-dismiss (phones): offset in a ref so touchend reads the final
-  // value; scrollable children opt out via data-noswipe so lists still scroll
-  const startY = useRef<number | null>(null);
-  const pullRef = useRef(0);
-  const [pull, setPull] = useState(0);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const springRef = useRef<SpringHandle | null>(null);
+  const drag = useRef<{ id: number; y: number; active: boolean; offset: number } | null>(null);
+  const tracker = useRef(new VelocityTracker());
 
   // lyrics live on the track detail, not on the queue entry
   const trackId = current?.id;
@@ -285,39 +441,79 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
       .catch(() => setLyrics(null));
   }, [trackId]);
 
-  if (!current) return null;
+  const apply = useCallback((y: number) => {
+    const el = sheetRef.current;
+    if (!el) return;
+    el.style.transform = `translateY(${y}px)`;
+    // a large surface fading as it travels reads lighter than one that slides
+    el.style.opacity = String(Math.max(0.4, 1 - y / (window.innerHeight * 0.9)));
+  }, []);
 
-  const onTouchStart = (e: React.TouchEvent) => {
-    if ((e.target as HTMLElement).closest("[data-noswipe]")) return;
-    startY.current = e.touches[0].clientY;
-    pullRef.current = 0;
+  useEffect(() => () => springRef.current?.stop(), []);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    if ((e.target as HTMLElement).closest("[data-noswipe], button, a, input, [role='slider']"))
+      return;
+    const from = springRef.current?.value() ?? 0;
+    springRef.current?.stop();
+    springRef.current = null;
+    drag.current = { id: e.pointerId, y: e.clientY, active: false, offset: from };
+    tracker.current.reset();
+    tracker.current.add(from);
   };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (startY.current === null || !e.touches[0]) return;
-    const dy = e.touches[0].clientY - startY.current;
-    // downward only — dragging up shouldn't lift the sheet off screen
-    if (dy > 0) {
-      pullRef.current = dy;
-      setPull(dy);
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || d.id !== e.pointerId) return;
+    const dy = e.clientY - d.y;
+    if (!d.active) {
+      if (Math.abs(dy) < 10) return;
+      d.active = true;
+      capturePointer(e.currentTarget, e.pointerId);
     }
+    const raw = d.offset + dy;
+    // down follows the finger 1:1; up resists instead of lifting off screen
+    const y = raw >= 0 ? raw : -rubberband(-raw, window.innerHeight);
+    tracker.current.add(y);
+    apply(y);
   };
-  const onTouchEnd = () => {
-    if (pullRef.current >= DISMISS_THRESHOLD) onClose();
-    startY.current = null;
-    pullRef.current = 0;
-    setPull(0);
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || d.id !== e.pointerId) return;
+    drag.current = null;
+    if (!d.active) return;
+
+    const v = tracker.current.get();
+    const y = Math.max(0, d.offset + (e.clientY - d.y));
+    const projected = y + project(v);
+    const dismiss = projected > window.innerHeight * DISMISS_FRACTION || v > DISMISS_VELOCITY;
+
+    springRef.current = spring({
+      from: y,
+      to: dismiss ? window.innerHeight : 0,
+      velocity: v,
+      damping: dismiss ? 1 : 0.8,
+      response: 0.3,
+      onFrame: apply,
+      onRest: () => {
+        springRef.current = null;
+        if (dismiss) onClose();
+      },
+    });
   };
+
+  if (!current) return null;
 
   return (
     <div
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-      style={{
-        transform: pull ? `translateY(${pull * 0.5}px)` : undefined,
-        opacity: pull ? Math.max(0.6, 1 - pull / 500) : undefined,
-      }}
-      className="fixed inset-0 z-40 flex animate-slide-up flex-col bg-bg pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] transition-[transform,opacity]"
+      ref={sheetRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      className="fixed inset-0 z-40 flex animate-slide-up touch-pan-y flex-col bg-bg pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
     >
       {/* grab handle: the phone affordance for "drag me down" */}
       <button
@@ -368,67 +564,58 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
 
           {/* title, seek bar and sheet toggles travel together as one block */}
           <div className="flex w-full flex-col gap-3">
-          <div className="w-full text-center">
-            <Link
-              to={trackPath(current)}
-              onClick={onClose}
-              className="block truncate font-display text-xl hover:underline"
-            >
-              {current.title}
-            </Link>
-            <Link
-              to={`/artist/${slugify(current.author)}`}
-              onClick={onClose}
-              className="block truncate text-sm text-muted hover:underline"
-            >
-              {current.author}
-            </Link>
-          </div>
-
-          <div className="h-12 w-full">
-            <AudioVisualizer playing={isPlaying} />
-          </div>
-
-          <div className="flex w-full flex-col gap-1" data-noswipe>
-            <input
-              type="range"
-              min={0}
-              max={duration || 0}
-              step={0.1}
-              value={currentTime}
-              onChange={(e) => seek(Number(e.target.value))}
-              aria-label="прогресс"
-              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-hover accent-accent"
-            />
-            <div className="flex justify-between font-mono text-[11px] text-muted">
-              <span>{formatTime(currentTime)}</span>
-              <span>{formatTime(duration)}</span>
+            <div className="w-full text-center">
+              <Link
+                to={trackPath(current)}
+                onClick={onClose}
+                className="block truncate font-display text-xl hover:underline"
+              >
+                {current.title}
+              </Link>
+              <Link
+                to={`/artist/${slugify(current.author)}`}
+                onClick={onClose}
+                className="block truncate text-sm text-muted hover:underline"
+              >
+                {current.author}
+              </Link>
             </div>
-          </div>
 
-          <div className="hidden md:block">
-            <VolumeControl />
-          </div>
+            <div className="h-12 w-full">
+              <AudioVisualizer playing={isPlaying} />
+            </div>
 
-          {/* phones: reach the queue and lyrics without hunting the artwork */}
-          <div className="flex w-full gap-2 lg:hidden">
-            <button
-              onClick={() => setShowQueue((q) => !q)}
-              data-active={showQueue}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-card border border-border bg-surface py-2.5 text-sm text-muted transition-colors active:scale-[0.98] data-[active=true]:text-accent"
-            >
-              <IconPlaylist size={17} /> очередь
-            </button>
-            {lyrics && (
+            <div className="flex w-full flex-col gap-1" data-noswipe>
+              <SeekBar tall />
+              <div className="flex justify-between font-mono text-[11px] text-muted">
+                <span>{formatTime(currentTime)}</span>
+                <span>{formatTime(duration)}</span>
+              </div>
+            </div>
+
+            <div className="hidden md:block">
+              <VolumeControl />
+            </div>
+
+            {/* phones: reach the queue and lyrics without hunting the artwork */}
+            <div className="flex w-full gap-2 lg:hidden">
               <button
-                onClick={() => setShowLyrics((s) => !s)}
-                data-active={showLyrics}
+                onClick={() => setShowQueue((q) => !q)}
+                data-active={showQueue}
                 className="flex flex-1 items-center justify-center gap-1.5 rounded-card border border-border bg-surface py-2.5 text-sm text-muted transition-colors active:scale-[0.98] data-[active=true]:text-accent"
               >
-                <IconMicrophone2 size={17} /> текст
+                <IconPlaylist size={17} /> очередь
               </button>
-            )}
-          </div>
+              {lyrics && (
+                <button
+                  onClick={() => setShowLyrics((s) => !s)}
+                  data-active={showLyrics}
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-card border border-border bg-surface py-2.5 text-sm text-muted transition-colors active:scale-[0.98] data-[active=true]:text-accent"
+                >
+                  <IconMicrophone2 size={17} /> текст
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -462,7 +649,6 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
           <LyricsPanel content={lyrics} active />
         </div>
       )}
-      {isPlaying && <span className="sr-only">играет</span>}
     </div>
   );
 }
@@ -470,11 +656,19 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
 const QUEUE_ROW_H = 56;
 
 function QueueList({ onClose }: { onClose: () => void }) {
-  const { queue, index, isPlaying, playAt, removeFromQueue, clearQueue } = usePlayer();
+  const { queue, index, isPlaying, playAt, removeFromQueue, clearQueue, moveInQueue } = usePlayer();
   const { scrollRef, start, end, padTop, padBottom } = useVirtualList({
     count: queue.length,
     rowHeight: QUEUE_ROW_H,
   });
+  // the row being dragged, and the row it is hovering over
+  const [from, setFrom] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+
+  const endDrag = () => {
+    setFrom(null);
+    setOver(null);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-4">
@@ -511,9 +705,31 @@ function QueueList({ onClose }: { onClose: () => void }) {
                 <li
                   key={`${t.id}-${i}`}
                   data-current={i === index}
+                  data-over={over === i && from !== i}
                   style={{ height: QUEUE_ROW_H }}
-                  className="group flex items-center gap-3 rounded-md px-2 transition-colors hover:bg-surface data-[current=true]:bg-surface"
+                  draggable={from !== null}
+                  onDragStart={() => setFrom(i)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setOver(i);
+                  }}
+                  onDrop={() => {
+                    if (from !== null && from !== i) moveInQueue(from, i);
+                    endDrag();
+                  }}
+                  onDragEnd={endDrag}
+                  className="group flex items-center gap-2 rounded-md px-2 transition-colors hover:bg-surface data-[current=true]:bg-surface data-[over=true]:bg-surface-hover"
                 >
+                  {/* grabbing the handle is what arms the drag, so a plain tap
+                      on the row still just plays the track */}
+                  <span
+                    onPointerDown={() => setFrom(i)}
+                    aria-hidden
+                    title="перетащить"
+                    className="hover-reveal -ml-1 cursor-grab text-muted transition-opacity active:cursor-grabbing"
+                  >
+                    <IconGripVertical size={14} />
+                  </span>
                   <span className="flex w-5 justify-end font-mono text-xs text-muted">
                     {i === index ? <EqBars playing={isPlaying} /> : i + 1}
                   </span>
@@ -530,7 +746,7 @@ function QueueList({ onClose }: { onClose: () => void }) {
                   <button
                     onClick={() => removeFromQueue(i)}
                     aria-label="убрать из очереди"
-                    className="grid h-8 w-8 place-items-center rounded-full text-muted opacity-0 transition-opacity hover:text-accent group-hover:opacity-100"
+                    className="hover-reveal grid h-8 w-8 place-items-center rounded-full text-muted transition-opacity hover:text-accent"
                   >
                     <IconX size={15} />
                   </button>

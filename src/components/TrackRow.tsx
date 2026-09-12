@@ -1,6 +1,6 @@
 import { IconHeadphones } from "@tabler/icons-react";
 import { usePlayer } from "../hooks/usePlayer";
-import type { Track } from "../lib/tracks";
+import { formatTime, type Track } from "../lib/tracks";
 import EqBars from "./EqBars";
 
 /**
@@ -69,6 +69,12 @@ export default function TrackRow({
           <IconHeadphones size={13} /> {track.plays ?? 0}
         </span>
       )}
+
+      {track.duration ? (
+        <span className="pointer-events-none relative hidden font-mono text-xs text-muted sm:block">
+          {formatTime(track.duration)}
+        </span>
+      ) : null}
 
       {right && <span className="relative flex shrink-0 items-center gap-1">{right}</span>}
     </li>

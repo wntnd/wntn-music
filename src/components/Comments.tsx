@@ -3,12 +3,14 @@ import { Link } from "react-router-dom";
 import { IconTrash, IconSend } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
 import { commentApi, type Comment } from "../lib/api";
+import { useDialogs } from "./Dialogs";
 
 export default function Comments({ trackId }: { trackId: string }) {
   const { user } = useAuth();
   const [list, setList] = useState<Comment[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const { run } = useDialogs();
 
   const load = () => commentApi.list(trackId).then(setList).catch(() => {});
   useEffect(() => {
@@ -20,18 +22,15 @@ export default function Comments({ trackId }: { trackId: string }) {
     e.preventDefault();
     if (!text.trim()) return;
     setBusy(true);
-    try {
-      await commentApi.add(trackId, text.trim());
-      setText("");
-      await load();
-    } finally {
-      setBusy(false);
-    }
+    const ok = await run(() => commentApi.add(trackId, text.trim()));
+    setBusy(false);
+    if (!ok) return;
+    setText("");
+    await load();
   };
 
   const remove = async (id: string) => {
-    await commentApi.remove(id).catch(() => {});
-    setList((l) => l.filter((c) => c.id !== id));
+    if (await run(() => commentApi.remove(id))) setList((l) => l.filter((c) => c.id !== id));
   };
 
   return (

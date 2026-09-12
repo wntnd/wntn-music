@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { IconUserPlus, IconUserCheck } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
+import { useGoLogin } from "../hooks/useGoLogin";
 import { meApi } from "../lib/api";
 
 export default function FollowButton({
@@ -14,12 +14,12 @@ export default function FollowButton({
   initialCount: number;
 }) {
   const { user } = useAuth();
-  const navigate = useNavigate();
+  const goLogin = useGoLogin();
   const [following, setFollowing] = useState(initialFollowing);
   const [count, setCount] = useState(initialCount);
 
   const toggle = async () => {
-    if (!user) return navigate("/login");
+    if (!user) return goLogin();
     const prev = following;
     setFollowing(!prev);
     setCount((c) => c + (prev ? -1 : 1));

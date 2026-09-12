@@ -14,6 +14,8 @@ import {
 } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
 import { usePlayer } from "../hooks/usePlayer";
+import { useTitle } from "../hooks/useTitle";
+import { useGoLogin } from "../hooks/useGoLogin";
 import { playlistApi, meApi } from "../lib/api";
 import { useDialogs } from "./Dialogs";
 import EditableImage from "./EditableImage";
@@ -44,6 +46,9 @@ export default function PlaylistPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const goLogin = useGoLogin();
+  const { run } = useDialogs();
+  useTitle(title || null);
 
   useEffect(() => {
     if (!id) return;
@@ -75,12 +80,8 @@ export default function PlaylistPage() {
 
   const remove = async (trackId: string) => {
     if (!id) return;
-    try {
-      await playlistApi.removeTrack(id, trackId);
+    if (await run(() => playlistApi.removeTrack(id, trackId)))
       setRows((rs) => rs.filter((r) => r.id !== trackId));
-    } catch {
-      /* ignore */
-    }
   };
 
   if (error) return <p className="font-mono text-sm text-accent">{error}</p>;
@@ -88,7 +89,7 @@ export default function PlaylistPage() {
   const cover = plCover ?? rows[0]?.cover ?? "/covers/default.jpg";
 
   const toggleSave = async () => {
-    if (!user) return navigate("/login");
+    if (!user) return goLogin();
     if (!id) return;
     setSaved((s) => !s);
     await playlistApi.toggleSave(id).catch(() => setSaved((s) => !s));
@@ -97,10 +98,13 @@ export default function PlaylistPage() {
   const move = async (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (!id || j < 0 || j >= rows.length) return;
+    const previous = rows;
     const next = [...rows];
     [next[i], next[j]] = [next[j], next[i]];
     setRows(next);
-    await playlistApi.reorder(id, next.map((r) => r.id)).catch(() => {});
+    // optimistic: put the old order back if the server refuses it
+    const ok = await run(() => playlistApi.reorder(id, next.map((r) => r.id)));
+    if (!ok) setRows(previous);
   };
 
   return (
@@ -201,7 +205,7 @@ export default function PlaylistPage() {
                 right={
                   <>
                     {isOwner && (
-                      <span className="flex flex-col opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="hover-reveal flex flex-col transition-opacity">
                         <button
                           onClick={() => void move(i, -1)}
                           disabled={i === 0}
@@ -224,7 +228,7 @@ export default function PlaylistPage() {
                       onClick={() => addToQueue(t)}
                       aria-label="в очередь"
                       title="добавить в очередь"
-                      className="hidden h-8 w-8 place-items-center rounded-full text-muted opacity-0 transition-opacity hover:bg-surface-hover hover:text-text group-hover:opacity-100 sm:grid"
+                      className="hidden h-8 w-8 place-items-center rounded-full hover-reveal text-muted transition-opacity hover:bg-surface-hover hover:text-text sm:grid"
                     >
                       <IconPlus size={16} />
                     </button>

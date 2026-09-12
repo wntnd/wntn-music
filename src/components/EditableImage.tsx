@@ -71,6 +71,16 @@ export default function EditableImage({
           </span>
         )}
       </span>
+      {/* phones never see the hover scrim above, so the artwork gets a badge
+          that says out loud it can be replaced */}
+      {!busy && (
+        <span
+          aria-hidden
+          className="touch-only absolute bottom-1 right-1 h-7 w-7 place-items-center rounded-full bg-black/60 text-white"
+        >
+          <IconCamera size={15} />
+        </span>
+      )}
       <input
         ref={inputRef}
         type="file"

@@ -8,8 +8,29 @@ export type Track = {
   description: string;
   song: string;
   plays?: number;
+  duration?: number | null;
   features?: { name: string; slug: string }[];
 };
+
+/**
+ * Length of an audio file, read in the browser before upload. The file is
+ * already local, so this costs nothing — and it saves the server from having
+ * to decode audio just to show "3:42" in a list.
+ */
+export function readAudioDuration(file: File): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    const done = (seconds: number) => {
+      URL.revokeObjectURL(url);
+      resolve(seconds);
+    };
+    audio.onloadedmetadata = () =>
+      done(Number.isFinite(audio.duration) ? Math.round(audio.duration) : 0);
+    audio.onerror = () => done(0);
+    audio.src = url;
+  });
+}
 
 // Pretty track url: `/track/<slug>-<shortId>`, falling back to the raw id for
 // anything not yet carrying the short fields.
@@ -51,6 +72,7 @@ type ApiTrack = {
   author: string;
   song: string | null;
   plays?: number;
+  duration?: number | null;
   features?: { name: string; slug: string }[];
 };
 
@@ -64,6 +86,7 @@ export const toTrack = (r: ApiTrack): Track => ({
   description: "",
   song: r.song as string,
   plays: r.plays,
+  duration: r.duration,
   features: r.features,
 });
 
@@ -113,4 +136,13 @@ export function formatTime(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Russian plural agreement: plural(1,"трек","трека","треков") -> "трек". */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
 }

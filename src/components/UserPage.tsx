@@ -1,75 +1,20 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { IconUserCircle, IconMicrophone2, IconMusic } from "@tabler/icons-react";
-import { userApi, meApi, type UserProfile, type PlaybackSync } from "../lib/api";
+import { IconUserCircle, IconMicrophone2, IconMusic, IconSettings } from "@tabler/icons-react";
+import { userApi, meApi, type UserProfile } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
-import { usePlayer } from "../hooks/usePlayer";
+import { useTitle } from "../hooks/useTitle";
 import EditableImage from "./EditableImage";
-
-const SYNC_OPTIONS: { value: PlaybackSync; label: string; hint: string }[] = [
-  { value: "off", label: "выключена", hint: "каждая вкладка играет сама по себе" },
-  { value: "tabs", label: "только вкладки", hint: "играет одна вкладка — остальные встают на паузу" },
-  { value: "full", label: "полная", hint: "во всех вкладках та же очередь, трек и позиция" },
-];
-
-function PlaybackSyncSetting() {
-  const { user } = useAuth();
-  const { syncMode, setSyncMode } = usePlayer();
-  const [status, setStatus] = useState<string | null>(null);
-
-  // the account value wins over whatever this browser had cached
-  useEffect(() => {
-    if (user?.playbackSync && user.playbackSync !== syncMode) setSyncMode(user.playbackSync);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.playbackSync]);
-
-  const pick = async (mode: PlaybackSync) => {
-    setSyncMode(mode);
-    setStatus("сохранение…");
-    try {
-      await meApi.updateSettings({ playbackSync: mode });
-      setStatus("сохранено ✓");
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : "ошибка");
-    }
-  };
-
-  return (
-    <section className="flex max-w-md flex-col gap-2">
-      <h2 className="font-display text-xl">синхронизация проигрывания</h2>
-      <div className="flex flex-col gap-1.5">
-        {SYNC_OPTIONS.map((o) => (
-          <label
-            key={o.value}
-            data-active={syncMode === o.value}
-            className="flex cursor-pointer items-start gap-2 rounded-card border border-border bg-surface p-2.5 text-sm hover:bg-surface-hover data-[active=true]:border-accent"
-          >
-            <input
-              type="radio"
-              name="playbackSync"
-              checked={syncMode === o.value}
-              onChange={() => void pick(o.value)}
-              className="mt-0.5 accent-accent"
-            />
-            <span>
-              {o.label}
-              <span className="block text-xs text-muted">{o.hint}</span>
-            </span>
-          </label>
-        ))}
-      </div>
-      {status && <span className="font-mono text-xs text-muted">{status}</span>}
-    </section>
-  );
-}
+import { useDialogs } from "./Dialogs";
 
 export default function UserPage() {
   const { username } = useParams();
   const { user } = useAuth();
+  const { run } = useDialogs();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [avatar, setAvatar] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useTitle(profile ? (profile.displayName ?? `@${profile.username}`) : null);
 
   useEffect(() => {
     if (!username) return;
@@ -87,14 +32,9 @@ export default function UserPage() {
   const isMe = Boolean(user && profile && user.username === profile.username);
 
   const uploadAvatar = async (file: File) => {
-    setStatus("загрузка…");
-    try {
-      const r = await meApi.uploadAvatar(file);
-      setAvatar(`${r.avatar}?t=${Date.now()}`);
-      setStatus(null);
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : "ошибка");
-    }
+    const r = await run(() => meApi.uploadAvatar(file), "аватарка обновлена");
+    // cache-buster: the url never changes, so the browser would keep the old one
+    if (r) setAvatar(`${r.avatar}?t=${Date.now()}`);
   };
 
   if (error)
@@ -143,13 +83,16 @@ export default function UserPage() {
               <IconMicrophone2 size={14} /> {profile.artist.name}
             </Link>
           )}
-          {isMe && status && (
-            <span className="mt-1 font-mono text-xs text-muted">{status}</span>
+          {isMe && (
+            <Link
+              to="/settings"
+              className="mt-2 inline-flex items-center gap-1.5 rounded-card border border-border bg-surface px-3 py-1.5 text-sm transition-colors hover:bg-surface-hover"
+            >
+              <IconSettings size={15} /> настройки
+            </Link>
           )}
         </div>
       </div>
-
-      {isMe && <PlaybackSyncSetting />}
 
       <section className="flex flex-col gap-3">
         <h2 className="font-display text-xl">публичные плейлисты</h2>

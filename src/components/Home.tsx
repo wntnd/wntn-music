@@ -15,7 +15,9 @@ import {
   type HomePlaylist,
   type HomePopularTrack,
 } from "../lib/api";
-import { toTrack, trackPath, type Track } from "../lib/tracks";
+import { plural, toTrack, trackPath, type Track } from "../lib/tracks";
+import ArtistAvatar from "./ArtistAvatar";
+import { useTitle } from "../hooks/useTitle";
 import TrackGrid, { GridSkeleton } from "./TrackGrid";
 import TrackMenu from "./TrackMenu";
 import TrackRow from "./TrackRow";
@@ -41,6 +43,7 @@ export default function Home() {
   const [playlists, setPlaylists] = useState<HomePlaylist[]>([]);
   const [popular, setPopular] = useState<HomePopularTrack[]>([]);
   const [stats, setStats] = useState({ tracks: 0, artists: 0, albums: 0 });
+  useTitle(null);
 
   useEffect(() => {
     homeApi
@@ -56,6 +59,8 @@ export default function Home() {
   }, []);
 
   const newReleases = albums.filter((a) => isNewRelease(a.releaseDate));
+  // anything already sitting in "новые релизы" would otherwise appear twice
+  const olderAlbums = albums.filter((a) => !isNewRelease(a.releaseDate));
   const popularTracks: Track[] = popular
     .filter((t) => t.song)
     .map((t) => toTrack({ ...t, song: t.song }));
@@ -77,20 +82,16 @@ export default function Home() {
                 viewTransition
                 className="group flex w-24 shrink-0 animate-fade-up flex-col items-center gap-2 text-center"
               >
-                {a.avatar ? (
-                  <img
-                    src={a.avatar}
-                    alt=""
-                    className="h-24 w-24 rounded-full object-cover transition-transform group-hover:scale-105"
-                  />
-                ) : (
-                  <div className="grid h-24 w-24 place-items-center rounded-full bg-surface font-display text-2xl transition-transform group-hover:scale-105">
-                    {a.name.slice(0, 1).toUpperCase()}
-                  </div>
-                )}
+                <ArtistAvatar
+                  src={a.avatar}
+                  name={a.name}
+                  className="transition-transform group-hover:scale-105"
+                />
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium group-hover:underline">{a.name}</p>
-                  <p className="text-xs text-muted">{a.trackCount} треков</p>
+                  <p className="text-xs text-muted">
+                    {a.trackCount} {plural(a.trackCount, "трек", "трека", "треков")}
+                  </p>
                 </div>
               </Link>
             ))}
@@ -113,11 +114,11 @@ export default function Home() {
         </section>
       )}
 
-      {albums.length > 0 && (
+      {olderAlbums.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="font-display text-xl">альбомы</h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-            {albums.map((al) => (
+            {olderAlbums.map((al) => (
               <AlbumCard key={al.id} album={al} />
             ))}
           </div>
@@ -137,7 +138,16 @@ export default function Home() {
               >
                 <div className="aspect-square overflow-hidden rounded-md bg-bg">
                   {p.cover ? (
-                    <img src={p.cover} alt="" className="h-full w-full object-cover" />
+                    <img
+                      src={p.cover}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        if (!img.src.endsWith("/covers/default.jpg"))
+                          img.src = "/covers/default.jpg";
+                      }}
+                    />
                   ) : (
                     <span className="grid h-full w-full place-items-center text-muted">
                       <IconMusic size={28} />
@@ -216,13 +226,13 @@ function Hero({
           </p>
           <div className="flex flex-wrap gap-2 text-xs text-muted">
             <span className="rounded-card border border-border bg-bg/60 px-2 py-1">
-              {stats.tracks} треков
+              {stats.tracks} {plural(stats.tracks, "трек", "трека", "треков")}
             </span>
             <span className="rounded-card border border-border bg-bg/60 px-2 py-1">
-              {stats.artists} артистов
+              {stats.artists} {plural(stats.artists, "артист", "артиста", "артистов")}
             </span>
             <span className="rounded-card border border-border bg-bg/60 px-2 py-1">
-              {stats.albums} альбомов
+              {stats.albums} {plural(stats.albums, "альбом", "альбома", "альбомов")}
             </span>
           </div>
           {lead && (
@@ -281,7 +291,7 @@ function PopularRail({ tracks }: { tracks: Track[] }) {
                   onClick={() => addToQueue(t)}
                   aria-label="в очередь"
                   title="добавить в очередь"
-                  className="hidden h-8 w-8 place-items-center rounded-full text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text group-hover:opacity-100 sm:grid"
+                  className="hidden h-8 w-8 place-items-center rounded-full hover-reveal text-muted transition-all hover:bg-surface-hover hover:text-text sm:grid"
                 >
                   <IconPlus size={16} />
                 </button>

@@ -1,10 +1,15 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { useTitle } from "../hooks/useTitle";
 
 export default function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const { login, signup } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  useTitle(mode === "signup" ? "регистрация" : "вход");
+  // sent here from a like button or a private page? go back to it, not /library
+  const from = (location.state as { from?: string } | null)?.from;
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -18,7 +23,7 @@ export default function AuthPage({ mode }: { mode: "login" | "signup" }) {
     try {
       if (mode === "signup") await signup(username, email, password);
       else await login(username, password);
-      navigate("/library");
+      navigate(from && !from.startsWith("/login") ? from : "/library", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "ошибка");
     } finally {
@@ -72,14 +77,14 @@ export default function AuthPage({ mode }: { mode: "login" | "signup" }) {
         {mode === "signup" ? (
           <>
             уже есть аккаунт?{" "}
-            <Link to="/login" className="text-accent hover:underline">
+            <Link to="/login" state={{ from }} className="text-accent hover:underline">
               войти
             </Link>
           </>
         ) : (
           <>
             нет аккаунта?{" "}
-            <Link to="/signup" className="text-accent hover:underline">
+            <Link to="/signup" state={{ from }} className="text-accent hover:underline">
               регистрация
             </Link>
           </>

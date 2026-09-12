@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import {
   IconPlayerPlayFilled,
   IconChevronUp,
@@ -11,6 +11,8 @@ import {
 import { albumApi, meApi, type AlbumDetail } from "../lib/api";
 import { usePlayer } from "../hooks/usePlayer";
 import { useAuth } from "../hooks/useAuth";
+import { useTitle } from "../hooks/useTitle";
+import { useGoLogin } from "../hooks/useGoLogin";
 import type { Track } from "../lib/tracks";
 import EditableImage from "./EditableImage";
 import TrackRow from "./TrackRow";
@@ -22,9 +24,10 @@ export default function AlbumPage() {
   const { id } = useParams();
   const { play, addToQueue } = usePlayer();
   const { user } = useAuth();
-  const navigate = useNavigate();
   const [album, setAlbum] = useState<AlbumDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const goLogin = useGoLogin();
+  useTitle(album ? `${album.title} — ${album.artistName}` : null);
 
   useEffect(() => {
     if (!id) return;
@@ -56,7 +59,7 @@ export default function AlbumPage() {
   };
 
   const toggleSave = async () => {
-    if (!user) return navigate("/login");
+    if (!user) return goLogin();
     setAlbum({ ...album, saved: !album.saved });
     await meApi.toggleSavedAlbum(album.id).catch(() => setAlbum(album));
   };
@@ -186,13 +189,13 @@ export default function AlbumPage() {
                       onClick={() => addToQueue(pt)}
                       aria-label="в очередь"
                       title="добавить в очередь"
-                      className="hidden h-8 w-8 place-items-center rounded-full text-muted opacity-0 transition-opacity hover:bg-surface-hover hover:text-text group-hover:opacity-100 sm:grid"
+                      className="hidden h-8 w-8 place-items-center rounded-full hover-reveal text-muted transition-opacity hover:bg-surface-hover hover:text-text sm:grid"
                     >
                       <IconPlus size={16} />
                     </button>
                     <TrackMenu track={pt} />
                     {album.canManage && (
-                      <span className="flex flex-col opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="hover-reveal flex flex-col transition-opacity">
                         <button
                           onClick={() => void move(i, -1)}
                           disabled={i === 0}

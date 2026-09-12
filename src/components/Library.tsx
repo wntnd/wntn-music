@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { IconPlus, IconX, IconLock, IconMusic } from "@tabler/icons-react";
 import { useAuth } from "../hooks/useAuth";
+import { useTitle } from "../hooks/useTitle";
+import { useGoLogin } from "../hooks/useGoLogin";
 import type { Track } from "../lib/tracks";
 import {
   meApi,
@@ -12,12 +14,14 @@ import {
   type SavedPlaylist,
 } from "../lib/api";
 import TrackGrid, { GridSkeleton } from "./TrackGrid";
+import ArtistAvatar from "./ArtistAvatar";
 import Checkbox from "./Checkbox";
 import { useDialogs } from "./Dialogs";
 
 export default function Library() {
   const { user, loading: authLoading } = useAuth();
-  const navigate = useNavigate();
+  const goLogin = useGoLogin();
+  useTitle("библиотека");
   const [likedTracks, setLikedTracks] = useState<Track[]>([]);
   const [libLoading, setLibLoading] = useState(true);
   const [playlists, setPlaylists] = useState<PlaylistMeta[]>([]);
@@ -26,11 +30,11 @@ export default function Library() {
   const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>([]);
   const [newTitle, setNewTitle] = useState("");
   const [newPublic, setNewPublic] = useState(true);
-  const { confirm } = useDialogs();
+  const { confirm, run } = useDialogs();
 
   useEffect(() => {
-    if (!authLoading && !user) navigate("/login");
-  }, [authLoading, user, navigate]);
+    if (!authLoading && !user) goLogin({ replace: true });
+  }, [authLoading, user, goLogin]);
 
   useEffect(() => {
     if (user)
@@ -65,19 +69,22 @@ export default function Library() {
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
-    try {
-      const { id } = await playlistApi.create({ title: newTitle.trim(), isPublic: newPublic });
-      setPlaylists((p) => [...p, { id, title: newTitle.trim(), cover: null, isPublic: newPublic }]);
-      setNewTitle("");
-    } catch {
-      /* ignore */
-    }
+    const created = await run(
+      () => playlistApi.create({ title: newTitle.trim(), isPublic: newPublic }),
+      `плейлист «${newTitle.trim()}» создан`,
+    );
+    if (!created) return;
+    setPlaylists((p) => [
+      ...p,
+      { id: created.id, title: newTitle.trim(), cover: null, isPublic: newPublic },
+    ]);
+    setNewTitle("");
   };
 
   const removePlaylist = async (id: string, title: string) => {
     if (!(await confirm(`удалить плейлист «${title}»?`, "удалить"))) return;
-    await playlistApi.remove(id).catch(() => {});
-    setPlaylists((p) => p.filter((x) => x.id !== id));
+    if (await run(() => playlistApi.remove(id), "плейлист удалён"))
+      setPlaylists((p) => p.filter((x) => x.id !== id));
   };
 
   return (
@@ -169,17 +176,11 @@ export default function Library() {
                 viewTransition
                 className="group flex w-24 flex-col items-center gap-2 text-center"
               >
-                {a.avatar ? (
-                  <img
-                    src={a.avatar}
-                    alt=""
-                    className="h-24 w-24 rounded-full object-cover transition-transform group-hover:scale-105"
-                  />
-                ) : (
-                  <span className="grid h-24 w-24 place-items-center rounded-full bg-surface font-display text-2xl transition-transform group-hover:scale-105">
-                    {a.name.slice(0, 1).toUpperCase()}
-                  </span>
-                )}
+                <ArtistAvatar
+                  src={a.avatar}
+                  name={a.name}
+                  className="transition-transform group-hover:scale-105"
+                />
                 <span className="w-full truncate text-sm font-medium group-hover:underline">
                   {a.name}
                 </span>
@@ -261,7 +262,7 @@ function CoverCard({
           onClick={onRemove}
           aria-label="удалить"
           title="удалить"
-          className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-full bg-bg/80 text-muted opacity-0 backdrop-blur transition-all hover:text-accent group-hover:opacity-100"
+          className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-full bg-bg/80 hover-reveal text-muted backdrop-blur transition-all hover:text-accent"
         >
           <IconX size={15} />
         </button>

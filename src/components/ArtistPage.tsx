@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import {
   IconId,
   IconPlayerPlayFilled,
@@ -14,8 +14,11 @@ import {
 } from "@tabler/icons-react";
 import { useTracks } from "../hooks/useTracks";
 import { useAuth } from "../hooks/useAuth";
+import { useTitle } from "../hooks/useTitle";
+import { useGoLogin } from "../hooks/useGoLogin";
 import { usePlayer } from "../hooks/usePlayer";
-import { trackPath, type Track } from "../lib/tracks";
+import { plural, trackPath, type Track } from "../lib/tracks";
+import ArtistAvatar from "./ArtistAvatar";
 import { artistApi, type ArtistProfile } from "../lib/api";
 import { GridSkeleton } from "./TrackGrid";
 import FollowButton from "./FollowButton";
@@ -43,9 +46,17 @@ function linkIcon(url: string) {
 export default function ArtistPage() {
   const { slug } = useParams();
   // only this artist's tracks are fetched, and they page in as you scroll
-  const { tracks: mine, loading, loadingMore, hasMore, sentinelRef } = useTracks({ artist: slug });
+  const {
+    tracks: mine,
+    total,
+    loading,
+    loadingMore,
+    hasMore,
+    sentinelRef,
+  } = useTracks({ artist: slug });
   const { play, addToQueue, current, isPlaying, toggle } = usePlayer();
   const [profile, setProfile] = useState<ArtistProfile | null>(null);
+  useTitle(profile?.name ?? slug ?? null);
 
   useEffect(() => {
     if (slug) artistApi.get(slug).then(setProfile).catch(() => setProfile(null));
@@ -54,8 +65,13 @@ export default function ArtistPage() {
   const name = profile?.name ?? mine[0]?.author ?? slug;
   const popular = [...mine].sort((a, b) => (b.plays ?? 0) - (a.plays ?? 0)).slice(0, 5);
   const albums = profile?.albums ?? [];
-  // newest first — the "новый релиз" slot shows whatever released last
-  const latest = [...albums].sort((a, b) => String(b.id).localeCompare(String(a.id)))[0];
+  // Newest *release*. Sorting by id put a random album in the slot — ids are
+  // uuids, so "newest" was whatever happened to sort last.
+  const latest = [...albums].sort((a, b) => {
+    const at = a.releaseDate ?? (a.year ? `${a.year}-01-01` : "");
+    const bt = b.releaseDate ?? (b.year ? `${b.year}-01-01` : "");
+    return bt.localeCompare(at);
+  })[0];
   const playingHere = current && mine.some((t) => t.id === current.id);
 
   const playAll = () => {
@@ -67,17 +83,13 @@ export default function ArtistPage() {
   return (
     <div className="flex animate-fade-up flex-col gap-8">
       <header className="flex flex-col items-center gap-5 sm:flex-row sm:items-end">
-        {profile?.avatar ? (
-          <img
-            src={profile.avatar}
-            alt=""
-            className="vt-cover h-40 w-40 shrink-0 rounded-full object-cover shadow-lg"
-          />
-        ) : (
-          <div className="grid h-40 w-40 shrink-0 place-items-center rounded-full bg-surface font-display text-5xl">
-            {(name ?? "?").slice(0, 1).toUpperCase()}
-          </div>
-        )}
+        <ArtistAvatar
+          src={profile?.avatar}
+          name={name ?? "?"}
+          size="h-40 w-40"
+          text="text-5xl"
+          className="vt-cover shadow-lg"
+        />
 
         <div className="flex min-w-0 flex-col items-center gap-3 sm:items-start">
           <p className="text-xs uppercase tracking-wide text-muted">исполнитель</p>
@@ -85,10 +97,13 @@ export default function ArtistPage() {
 
           <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-muted sm:justify-start">
             <span className="flex items-center gap-1 rounded-card border border-border bg-surface px-2 py-1">
-              <IconUser size={13} /> {profile?.followerCount ?? 0} подписчиков
+              <IconUser size={13} /> {profile?.followerCount ?? 0}{" "}
+              {plural(profile?.followerCount ?? 0, "подписчик", "подписчика", "подписчиков")}
             </span>
+            {/* the catalog pages in, so the loaded slice is not the count */}
             <span className="rounded-card border border-border bg-surface px-2 py-1">
-              {mine.length} треков
+              {total || mine.length}{" "}
+              {plural(total || mine.length, "трек", "трека", "треков")}
             </span>
             {profile?.genres?.map((g) => (
               <span key={g} className="rounded-card border border-border bg-surface px-2 py-1">
@@ -158,7 +173,7 @@ export default function ArtistPage() {
                         onClick={() => addToQueue(t)}
                         aria-label="в очередь"
                         title="добавить в очередь"
-                        className="hidden h-8 w-8 place-items-center rounded-full text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text group-hover:opacity-100 sm:grid"
+                        className="hidden h-8 w-8 place-items-center rounded-full hover-reveal text-muted transition-all hover:bg-surface-hover hover:text-text sm:grid"
                       >
                         <IconPlus size={16} />
                       </button>
@@ -293,7 +308,7 @@ function TrackRows({ tracks, queue }: { tracks: Track[]; queue: Track[] }) {
                 onClick={() => addToQueue(t)}
                 aria-label="в очередь"
                 title="добавить в очередь"
-                className="hidden h-8 w-8 place-items-center rounded-full text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-text group-hover:opacity-100 sm:grid"
+                className="hidden h-8 w-8 place-items-center rounded-full hover-reveal text-muted transition-all hover:bg-surface-hover hover:text-text sm:grid"
               >
                 <IconPlus size={16} />
               </button>
@@ -309,7 +324,7 @@ function TrackRows({ tracks, queue }: { tracks: Track[]; queue: Track[] }) {
 
 function ClaimControl({ slug, pending }: { slug: string; pending: boolean }) {
   const { user } = useAuth();
-  const navigate = useNavigate();
+  const goLogin = useGoLogin();
   const [sent, setSent] = useState(pending);
   const [error, setError] = useState<string | null>(null);
 
@@ -321,7 +336,7 @@ function ClaimControl({ slug, pending }: { slug: string; pending: boolean }) {
     );
 
   const request = async () => {
-    if (!user) return navigate("/login");
+    if (!user) return goLogin();
     try {
       await artistApi.requestClaim(slug);
       setSent(true);

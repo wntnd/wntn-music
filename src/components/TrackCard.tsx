@@ -36,9 +36,10 @@ export default function TrackCard({ track, queue }: { track: Track; queue: Track
             data-active={active}
             className="absolute inset-0 bg-black/25 opacity-0 transition-opacity group-hover:opacity-100 data-[active=true]:opacity-100"
           />
+          {/* on touch there is no hover, so the play affordance stays put */}
           <span
             data-active={active}
-            className="absolute bottom-2 right-2 grid h-11 w-11 translate-y-1 place-items-center rounded-full bg-accent text-white opacity-0 shadow-lg transition-all group-hover:translate-y-0 group-hover:opacity-100 group-active/play:scale-95 data-[active=true]:translate-y-0 data-[active=true]:opacity-100"
+            className="hover-reveal absolute bottom-2 right-2 grid h-11 w-11 place-items-center rounded-full bg-accent text-white shadow-lg transition-all group-active/play:scale-95"
           >
             {active && isPlaying ? (
               <IconPlayerPauseFilled size={20} />

@@ -79,6 +79,7 @@ export type TrackDetail = {
   albumId: string | null;
   genres: string[];
   explicit: boolean;
+  duration: number | null;
   features: { id: string; name: string; slug: string }[];
   clip: string | null;
   versions: TrackVersion[];
@@ -232,7 +233,14 @@ export type ArtistProfile = {
   genres: string[];
   links: string[];
   userId: string | null;
-  albums: { id: string; title: string; cover?: string | null; type?: string }[];
+  albums: {
+    id: string;
+    title: string;
+    cover?: string | null;
+    type?: string;
+    releaseDate?: string | null;
+    year?: number | null;
+  }[];
   tracks: LibraryTrack[];
   featuredOn: (LibraryTrack & { author: string })[];
   followerCount: number;
@@ -385,34 +393,128 @@ async function uploadForm<T>(path: string, form: FormData): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type UploadProgress = { onProgress?: (fraction: number) => void; signal?: AbortSignal };
+
+/** Server-side caps, mirrored here so a too-big file is refused instantly
+ *  instead of after a minute of uploading into a 413. */
+export const MAX_AUDIO_BYTES = 60 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_CLIP_BYTES = 200 * 1024 * 1024;
+
+/**
+ * Same as uploadForm, but reports progress and can be cancelled — fetch still
+ * has no upload progress event, and a 60MB track with no feedback and no way
+ * out is the worst part of the old studio.
+ */
+function uploadWithProgress<T>(path: string, form: FormData, opts?: UploadProgress): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api${path}`);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) opts?.onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      let body: { error?: string } = {};
+      try {
+        body = JSON.parse(xhr.responseText) as { error?: string };
+      } catch {
+        /* non-json error page */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body as T);
+      if (xhr.status === 413) return reject(new Error("файл слишком большой"));
+      reject(new Error(body.error ?? `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("сеть недоступна"));
+    xhr.onabort = () => reject(new DOMException("отменено", "AbortError"));
+    opts?.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(form);
+  });
+}
+
+export type VersionKind = "demo" | "release" | "remaster" | "live" | "other";
+
+export const KIND_RU: Record<string, string> = {
+  demo: "демо",
+  release: "релиз",
+  remaster: "ремастер",
+  live: "лайв",
+  other: "другое",
+};
+export const KIND_OPTIONS = Object.entries(KIND_RU).map(([value, label]) => ({ value, label }));
+
+export type StudioTrack = {
+  id: string;
+  slug: string | null;
+  shortId: string | null;
+  title: string;
+  cover: string | null;
+  plays: number;
+  duration: number | null;
+  explicit: boolean;
+  genres: string[];
+  albumId: string | null;
+  createdAt: string;
+  versionCount: number;
+  published: boolean;
+};
+export type StudioAlbum = {
+  id: string;
+  title: string;
+  cover: string | null;
+  type: "album" | "ep" | "single";
+  releaseDate: string | null;
+  year: number | null;
+  trackCount: number;
+};
+export type StudioOverview = {
+  artist: (MyArtist & { genres: string[]; links: string[] }) | null;
+  stats?: {
+    published: number;
+    drafts: number;
+    albums: number;
+    followers: number;
+    plays: number;
+  };
+  albums?: StudioAlbum[];
+  tracks?: StudioTrack[];
+};
+
 export const manageApi = {
-  createTrack: (b: { title: string; artistId: string; cover?: string }) =>
+  overview: () => api<StudioOverview>("/manage/overview"),
+  createTrack: (b: { title: string; artistId: string; albumId?: string; cover?: string }) =>
     api<{ id: string }>("/manage/tracks", { method: "POST", body: b }),
   uploadVersion: (
     trackId: string,
     file: File,
     opts: {
-      kind: "demo" | "release" | "remaster" | "live" | "other";
+      kind: VersionKind;
       label?: string;
       makePrimary?: boolean;
-    },
+      duration?: number;
+    } & UploadProgress,
   ) => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("kind", opts.kind);
     if (opts.label) fd.append("label", opts.label);
     if (opts.makePrimary) fd.append("makePrimary", "true");
-    return uploadForm<{ versionId: string }>(`/manage/tracks/${trackId}/versions`, fd);
+    if (opts.duration) fd.append("duration", String(Math.round(opts.duration)));
+    return uploadWithProgress<{ versionId: string }>(
+      `/manage/tracks/${trackId}/versions`,
+      fd,
+      opts,
+    );
   },
   uploadCover: (trackId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return uploadForm<{ ok: true }>(`/manage/tracks/${trackId}/cover`, fd);
+    return uploadForm<{ ok: true; cover: string }>(`/manage/tracks/${trackId}/cover`, fd);
   },
-  uploadClip: (trackId: string, file: File) => {
+  uploadClip: (trackId: string, file: File, opts?: UploadProgress) => {
     const fd = new FormData();
     fd.append("file", file);
-    return uploadForm<{ clip: string }>(`/manage/tracks/${trackId}/clip`, fd);
+    return uploadWithProgress<{ clip: string }>(`/manage/tracks/${trackId}/clip`, fd, opts);
   },
   deleteClip: (trackId: string) =>
     api<{ ok: true }>(`/manage/tracks/${trackId}/clip`, { method: "DELETE" }),
@@ -436,7 +538,7 @@ export const manageApi = {
     api<{ ok: true }>(`/manage/versions/${versionId}/primary`, { method: "POST" }),
   updateVersion: (
     versionId: string,
-    b: { kind?: "demo" | "release" | "remaster" | "live" | "other"; label?: string | null },
+    b: { kind?: VersionKind; label?: string | null },
   ) => api<{ ok: true }>(`/manage/versions/${versionId}`, { method: "PUT", body: b }),
   deleteVersion: (versionId: string) =>
     api<{ ok: true }>(`/manage/versions/${versionId}`, { method: "DELETE" }),
