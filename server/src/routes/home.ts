@@ -1,14 +1,15 @@
 import { Hono } from "hono";
-import { eq, desc, asc, count, sql } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql } from "drizzle-orm";
 import { db } from "../db";
 import { artists, albums, tracks, playlists } from "../db/schema";
+import { published } from "./tracks";
 
 export const homeRoutes = new Hono();
 
 // GET /api/home — everything the landing page needs in one shot
 homeRoutes.get("/", async (c) => {
   const [artistRows, albumRows, playlistRows, trackTotal] = await Promise.all([
-    db
+    db()
       .select({
         id: artists.id,
         slug: artists.slug,
@@ -17,10 +18,11 @@ homeRoutes.get("/", async (c) => {
         trackCount: count(tracks.id),
       })
       .from(artists)
-      .leftJoin(tracks, eq(tracks.artistId, artists.id))
+      // drafts don't count towards an artist's public track number
+      .leftJoin(tracks, and(eq(tracks.artistId, artists.id), published))
       .groupBy(artists.id)
       .orderBy(desc(count(tracks.id))),
-    db
+    db()
       .select({
         id: albums.id,
         title: albums.title,
@@ -39,7 +41,7 @@ homeRoutes.get("/", async (c) => {
         desc(albums.releaseDate),
         desc(albums.year),
       ),
-    db
+    db()
       .select({
         id: playlists.id,
         title: playlists.title,
@@ -50,10 +52,10 @@ homeRoutes.get("/", async (c) => {
       .where(eq(playlists.isPublic, true))
       .orderBy(desc(playlists.createdAt))
       .limit(12),
-    db.select({ n: count() }).from(tracks),
+    db().select({ n: count() }).from(tracks).where(published),
   ]);
   // top tracks power the hero and the "популярные" rail — small, fixed page
-  const popularRows = await db
+  const popularRows = await db()
     .select({
       id: tracks.id,
       slug: tracks.slug,
@@ -61,6 +63,7 @@ homeRoutes.get("/", async (c) => {
       title: tracks.title,
       cover: tracks.cover,
       plays: tracks.plays,
+      duration: tracks.duration,
       explicit: tracks.explicit,
       author: artists.name,
       authorSlug: artists.slug,
@@ -68,6 +71,7 @@ homeRoutes.get("/", async (c) => {
     })
     .from(tracks)
     .innerJoin(artists, eq(tracks.artistId, artists.id))
+    .where(published)
     .orderBy(desc(tracks.plays), desc(tracks.createdAt))
     .limit(10);
 

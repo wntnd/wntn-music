@@ -1,9 +1,17 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { bodyLimit } from "hono/body-limit";
-import { eq, and, ne, sql } from "drizzle-orm";
+import { eq, and, ne, sql, desc, count } from "drizzle-orm";
 import { db } from "../db";
-import { tracks, trackVersions, artists, lyrics, trackArtists, albums } from "../db/schema";
+import {
+  tracks,
+  trackVersions,
+  artists,
+  lyrics,
+  trackArtists,
+  albums,
+  follows,
+} from "../db/schema";
 import { requireAuth, isAdminRole } from "../auth";
 import { putObject, deleteObject } from "../storage";
 import { readImageForm } from "../upload";
@@ -25,7 +33,7 @@ type Role = AppEnv["Variables"]["role"];
 // Owner of the artist, or an admin — the "can manage" check everywhere below.
 async function ownsArtist(artistId: string, userId: string, role: Role) {
   if (isAdminRole(role)) return true;
-  const found = await db
+  const found = await db()
     .select({ userId: artists.userId })
     .from(artists)
     .where(eq(artists.id, artistId))
@@ -38,7 +46,7 @@ async function ownsArtist(artistId: string, userId: string, role: Role) {
 // remove it, since removal checks the *track's* owner).
 async function canUseAlbum(albumId: string, userId: string, role: Role) {
   if (isAdminRole(role)) return true;
-  const found = await db
+  const found = await db()
     .select({ artistId: albums.artistId })
     .from(albums)
     .where(eq(albums.id, albumId))
@@ -49,7 +57,7 @@ async function canUseAlbum(albumId: string, userId: string, role: Role) {
 
 async function ownsTrack(trackId: string, userId: string, role: Role) {
   if (isAdminRole(role)) return true;
-  const found = await db
+  const found = await db()
     .select({ userId: artists.userId })
     .from(tracks)
     .innerJoin(artists, eq(tracks.artistId, artists.id))
@@ -57,6 +65,84 @@ async function ownsTrack(trackId: string, userId: string, role: Role) {
     .limit(1);
   return found[0]?.userId === userId;
 }
+
+// GET /api/manage/overview — everything the studio renders, in one request.
+// The public artist profile hides drafts, so the studio can't be built on it.
+manageRoutes.get("/overview", async (c) => {
+  const userId = c.get("userId");
+  const owned = await db()
+    .select()
+    .from(artists)
+    .where(eq(artists.userId, userId))
+    .limit(1);
+  const artist = owned[0];
+  if (!artist) return c.json({ artist: null });
+
+  const [trackRows, albumRows, followerRow] = await Promise.all([
+    db()
+      .select({
+        id: tracks.id,
+        slug: tracks.slug,
+        shortId: tracks.shortId,
+        title: tracks.title,
+        cover: tracks.cover,
+        plays: tracks.plays,
+        duration: tracks.duration,
+        explicit: tracks.explicit,
+        genres: tracks.genres,
+        albumId: tracks.albumId,
+        createdAt: tracks.createdAt,
+        primaryVersionId: tracks.primaryVersionId,
+        versionCount: count(trackVersions.id),
+      })
+      .from(tracks)
+      .leftJoin(trackVersions, eq(trackVersions.trackId, tracks.id))
+      .where(eq(tracks.artistId, artist.id))
+      .groupBy(tracks.id)
+      .orderBy(desc(tracks.createdAt)),
+    db()
+      .select({
+        id: albums.id,
+        title: albums.title,
+        cover: albums.cover,
+        type: albums.type,
+        releaseDate: albums.releaseDate,
+        year: albums.year,
+        trackCount: count(tracks.id),
+      })
+      .from(albums)
+      .leftJoin(tracks, eq(tracks.albumId, albums.id))
+      .where(eq(albums.artistId, artist.id))
+      .groupBy(albums.id)
+      .orderBy(desc(albums.releaseDate)),
+    db().select({ n: count() }).from(follows).where(eq(follows.artistId, artist.id)),
+  ]);
+
+  const publishedTracks = trackRows.filter((t) => t.primaryVersionId);
+  return c.json({
+    artist: {
+      id: artist.id,
+      slug: artist.slug,
+      name: artist.name,
+      bio: artist.bio,
+      avatar: artist.avatar,
+      genres: artist.genres,
+      links: artist.links,
+    },
+    stats: {
+      published: publishedTracks.length,
+      drafts: trackRows.length - publishedTracks.length,
+      albums: albumRows.length,
+      followers: followerRow[0]?.n ?? 0,
+      plays: publishedTracks.reduce((n, t) => n + t.plays, 0),
+    },
+    albums: albumRows,
+    tracks: trackRows.map(({ primaryVersionId, ...t }) => ({
+      ...t,
+      published: Boolean(primaryVersionId),
+    })),
+  });
+});
 
 // POST /api/manage/tracks — create track metadata
 manageRoutes.post("/tracks", async (c) => {
@@ -76,7 +162,7 @@ manageRoutes.post("/tracks", async (c) => {
     return c.json({ error: "чужой альбом" }, 403);
 
   const id = newId();
-  await db.insert(tracks).values({
+  await db().insert(tracks).values({
     id,
     slug: contentSlug(body.data.title),
     shortId: shortIdFor(id),
@@ -111,7 +197,7 @@ manageRoutes.post("/tracks/:id/versions", uploadLimit, async (c) => {
 
   const makePrimary = String(form["makePrimary"] ?? "") === "true";
   const label = form["label"] ? String(form["label"]).slice(0, 80) : undefined;
-  await db.insert(trackVersions).values({
+  await db().insert(trackVersions).values({
     id: versionId,
     trackId,
     kind: kind as VersionKind,
@@ -119,9 +205,15 @@ manageRoutes.post("/tracks/:id/versions", uploadLimit, async (c) => {
     audioKey,
     isPrimary: makePrimary,
   });
-  if (makePrimary) {
-    await db.update(tracks).set({ primaryVersionId: versionId }).where(eq(tracks.id, trackId));
-  }
+  // Length is measured in the browser (the file is right there) and sent along,
+  // so lists can show a duration without the server decoding audio.
+  const duration = Math.round(Number(form["duration"] ?? 0));
+  const patch: { primaryVersionId?: string; duration?: number } = {};
+  if (makePrimary) patch.primaryVersionId = versionId;
+  if (Number.isFinite(duration) && duration > 0 && duration < 24 * 3600 && makePrimary)
+    patch.duration = duration;
+  if (Object.keys(patch).length)
+    await db().update(tracks).set(patch).where(eq(tracks.id, trackId));
   return c.json({ versionId });
 });
 
@@ -145,7 +237,7 @@ manageRoutes.post("/tracks/:id/clip", clipLimit, async (c) => {
 
   const clipKey = `clips/${trackId}.${ext}`;
   await putObject(clipKey, new Uint8Array(await file.arrayBuffer()), contentType);
-  await db.update(tracks).set({ clipKey }).where(eq(tracks.id, trackId));
+  await db().update(tracks).set({ clipKey }).where(eq(tracks.id, trackId));
   return c.json({ clip: `/api/clip/${trackId}` });
 });
 
@@ -154,13 +246,13 @@ manageRoutes.delete("/tracks/:id/clip", async (c) => {
   const trackId = param(c, "id");
   if (!(await ownsTrack(trackId, c.get("userId"), c.get("role"))))
     return c.json({ error: "forbidden" }, 403);
-  const row = await db
+  const row = await db()
     .select({ clipKey: tracks.clipKey })
     .from(tracks)
     .where(eq(tracks.id, trackId))
     .limit(1);
   if (row[0]?.clipKey) await deleteObject(row[0].clipKey);
-  await db.update(tracks).set({ clipKey: null }).where(eq(tracks.id, trackId));
+  await db().update(tracks).set({ clipKey: null }).where(eq(tracks.id, trackId));
   return c.json({ ok: true });
 });
 
@@ -181,11 +273,12 @@ manageRoutes.post("/tracks/:id/cover", imageLimit, async (c) => {
 
   const coverKey = `covers/${trackId}.${ext}`;
   await putObject(coverKey, new Uint8Array(await file.arrayBuffer()), contentType);
-  await db
+  await db()
     .update(tracks)
     .set({ coverKey, cover: `/api/cover/${trackId}` })
     .where(eq(tracks.id, trackId));
-  return c.json({ ok: true });
+  // the url never changes, so the caller needs it back to cache-bust the <img>
+  return c.json({ ok: true, cover: `/api/cover/${trackId}` });
 });
 
 // PUT /api/manage/tracks/:id/lyrics — LRC or plain; synced auto-detected
@@ -200,7 +293,7 @@ manageRoutes.put("/tracks/:id/lyrics", async (c) => {
   if (!body.success) return c.json({ error: "invalid input" }, 400);
 
   const isSynced = /\[\d+:\d+(?:[.:]\d+)?\]/.test(body.data.content);
-  await db
+  await db()
     .insert(lyrics)
     .values({ trackId, content: body.data.content, isSynced })
     .onConflictDoUpdate({
@@ -219,7 +312,7 @@ manageRoutes.post("/artists/:id/avatar", imageLimit, async (c) => {
   if (!img) return c.json({ error: "image only (jpg/png/webp)" }, 400);
   const avatarKey = `avatars/artist/${artistId}.${img.ext}`;
   await putObject(avatarKey, img.bytes, img.contentType);
-  await db
+  await db()
     .update(artists)
     .set({ avatarKey, avatar: `/api/avatar/artist/${artistId}` })
     .where(eq(artists.id, artistId));
@@ -245,13 +338,13 @@ manageRoutes.put("/tracks/:id", async (c) => {
 
   // newly attached to an album -> append at the end instead of sitting at null forever
   if (body.data.albumId) {
-    const current = await db
+    const current = await db()
       .select({ albumId: tracks.albumId })
       .from(tracks)
       .where(eq(tracks.id, trackId))
       .limit(1);
     if (current[0]?.albumId !== body.data.albumId) {
-      const last = await db
+      const last = await db()
         .select({ n: sql<number>`coalesce(max(${tracks.trackNumber}), 0)` })
         .from(tracks)
         .where(eq(tracks.albumId, body.data.albumId));
@@ -263,7 +356,7 @@ manageRoutes.put("/tracks/:id", async (c) => {
   const patch = body.data.title
     ? { ...body.data, slug: contentSlug(body.data.title) }
     : body.data;
-  await db.update(tracks).set(patch).where(eq(tracks.id, trackId));
+  await db().update(tracks).set(patch).where(eq(tracks.id, trackId));
   return c.json({ ok: true });
 });
 
@@ -278,7 +371,7 @@ manageRoutes.put("/tracks/:id/features", async (c) => {
     .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
 
-  const track = await db
+  const track = await db()
     .select({ artistId: tracks.artistId })
     .from(tracks)
     .where(eq(tracks.id, trackId))
@@ -286,9 +379,9 @@ manageRoutes.put("/tracks/:id/features", async (c) => {
   // the primary artist is already implied — don't duplicate them as a feature
   const ids = [...new Set(body.data.artistIds)].filter((a) => a !== track[0]?.artistId);
 
-  await db.delete(trackArtists).where(eq(trackArtists.trackId, trackId));
+  await db().delete(trackArtists).where(eq(trackArtists.trackId, trackId));
   if (ids.length)
-    await db
+    await db()
       .insert(trackArtists)
       .values(ids.map((artistId) => ({ trackId, artistId })))
       .onConflictDoNothing();
@@ -302,17 +395,17 @@ manageRoutes.delete("/tracks/:id", async (c) => {
     return c.json({ error: "forbidden" }, 403);
 
   const [versions, trackRow] = await Promise.all([
-    db
+    db()
       .select({ audioKey: trackVersions.audioKey })
       .from(trackVersions)
       .where(eq(trackVersions.trackId, trackId)),
-    db
+    db()
       .select({ coverKey: tracks.coverKey, clipKey: tracks.clipKey })
       .from(tracks)
       .where(eq(tracks.id, trackId))
       .limit(1),
   ]);
-  await db.delete(tracks).where(eq(tracks.id, trackId));
+  await db().delete(tracks).where(eq(tracks.id, trackId));
   for (const v of versions) await deleteObject(v.audioKey);
   if (trackRow[0]?.coverKey) await deleteObject(trackRow[0].coverKey);
   if (trackRow[0]?.clipKey) await deleteObject(trackRow[0].clipKey);
@@ -320,7 +413,7 @@ manageRoutes.delete("/tracks/:id", async (c) => {
 });
 
 async function getVersion(versionId: string) {
-  const found = await db
+  const found = await db()
     .select()
     .from(trackVersions)
     .where(eq(trackVersions.id, versionId))
@@ -334,12 +427,12 @@ manageRoutes.post("/versions/:id/primary", async (c) => {
   if (!version) return c.json({ error: "not found" }, 404);
   if (!(await ownsTrack(version.trackId, c.get("userId"), c.get("role"))))
     return c.json({ error: "forbidden" }, 403);
-  await db
+  await db()
     .update(trackVersions)
     .set({ isPrimary: false })
     .where(eq(trackVersions.trackId, version.trackId));
-  await db.update(trackVersions).set({ isPrimary: true }).where(eq(trackVersions.id, version.id));
-  await db
+  await db().update(trackVersions).set({ isPrimary: true }).where(eq(trackVersions.id, version.id));
+  await db()
     .update(tracks)
     .set({ primaryVersionId: version.id })
     .where(eq(tracks.id, version.trackId));
@@ -359,7 +452,7 @@ manageRoutes.put("/versions/:id", async (c) => {
     })
     .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
-  await db.update(trackVersions).set(body.data).where(eq(trackVersions.id, version.id));
+  await db().update(trackVersions).set(body.data).where(eq(trackVersions.id, version.id));
   return c.json({ ok: true });
 });
 
@@ -370,19 +463,19 @@ manageRoutes.delete("/versions/:id", async (c) => {
   if (!(await ownsTrack(version.trackId, c.get("userId"), c.get("role"))))
     return c.json({ error: "forbidden" }, 403);
 
-  await db.delete(trackVersions).where(eq(trackVersions.id, version.id));
+  await db().delete(trackVersions).where(eq(trackVersions.id, version.id));
   await deleteObject(version.audioKey);
 
   if (version.isPrimary) {
-    const next = await db
+    const next = await db()
       .select({ id: trackVersions.id })
       .from(trackVersions)
       .where(and(eq(trackVersions.trackId, version.trackId), ne(trackVersions.id, version.id)))
       .limit(1);
     const nextId = next[0]?.id ?? null;
     if (nextId)
-      await db.update(trackVersions).set({ isPrimary: true }).where(eq(trackVersions.id, nextId));
-    await db
+      await db().update(trackVersions).set({ isPrimary: true }).where(eq(trackVersions.id, nextId));
+    await db()
       .update(tracks)
       .set({ primaryVersionId: nextId })
       .where(eq(tracks.id, version.trackId));

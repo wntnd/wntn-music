@@ -13,7 +13,7 @@ export const albumRoutes = new Hono<AppEnv>();
 
 async function canManage(artistId: string, userId: string, role: AppEnv["Variables"]["role"]) {
   if (isAdminRole(role)) return true;
-  const owner = await db
+  const owner = await db()
     .select({ userId: artists.userId })
     .from(artists)
     .where(eq(artists.id, artistId))
@@ -24,7 +24,7 @@ async function canManage(artistId: string, userId: string, role: AppEnv["Variabl
 // GET /api/albums/:id -> album + artist + tracks (spotify-style detail)
 albumRoutes.get("/:id", async (c) => {
   const id = param(c, "id");
-  const found = await db
+  const found = await db()
     .select({
       id: albums.id,
       title: albums.title,
@@ -45,7 +45,7 @@ albumRoutes.get("/:id", async (c) => {
     .limit(1);
   const album = found[0];
   if (!album) return c.json({ error: "not found" }, 404);
-  const albumTracks = await db
+  const albumTracks = await db()
     .select({
       id: tracks.id,
       title: tracks.title,
@@ -64,7 +64,7 @@ albumRoutes.get("/:id", async (c) => {
   const canManageAlbum = me ? isAdminRole(me.role) || (await canManage(album.artistId, me.id, me.role)) : false;
   const saved = me
     ? (
-        await db
+        await db()
           .select({ userId: savedAlbums.userId })
           .from(savedAlbums)
           .where(and(eq(savedAlbums.userId, me.id), eq(savedAlbums.albumId, id)))
@@ -100,7 +100,7 @@ albumRoutes.post("/", requireAuth, async (c) => {
     return c.json({ error: "forbidden" }, 403);
 
   const id = newId();
-  await db.insert(albums).values({
+  await db().insert(albums).values({
     id,
     artistId: body.data.artistId,
     title: body.data.title,
@@ -111,7 +111,7 @@ albumRoutes.post("/", requireAuth, async (c) => {
 });
 
 async function getAlbum(id: string) {
-  const found = await db.select().from(albums).where(eq(albums.id, id)).limit(1);
+  const found = await db().select().from(albums).where(eq(albums.id, id)).limit(1);
   return found[0] ?? null;
 }
 
@@ -137,7 +137,7 @@ albumRoutes.put("/:id", requireAuth, async (c) => {
     return c.json({ error: "forbidden" }, 403);
   const body = updateSchema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
-  await db.update(albums).set(body.data).where(eq(albums.id, album.id));
+  await db().update(albums).set(body.data).where(eq(albums.id, album.id));
   return c.json({ ok: true });
 });
 
@@ -151,7 +151,7 @@ albumRoutes.post("/:id/cover", requireAuth, bodyLimit({ maxSize: 10 * 1024 * 102
   if (!img) return c.json({ error: "image only (jpg/png/webp)" }, 400);
   const coverKey = `covers/album/${album.id}.${img.ext}`;
   await putObject(coverKey, img.bytes, img.contentType);
-  await db
+  await db()
     .update(albums)
     .set({ coverKey, cover: `/api/cover/album/${album.id}` })
     .where(eq(albums.id, album.id));
@@ -170,7 +170,7 @@ albumRoutes.put("/:id/reorder", requireAuth, async (c) => {
 
   await Promise.all(
     body.data.trackIds.map((trackId, i) =>
-      db
+      db()
         .update(tracks)
         .set({ trackNumber: i + 1 })
         .where(and(eq(tracks.id, trackId), eq(tracks.albumId, album.id))),
@@ -185,6 +185,6 @@ albumRoutes.delete("/:id", requireAuth, async (c) => {
   if (!album) return c.json({ error: "not found" }, 404);
   if (!(await canManage(album.artistId, c.get("userId"), c.get("role"))))
     return c.json({ error: "forbidden" }, 403);
-  await db.delete(albums).where(eq(albums.id, album.id));
+  await db().delete(albums).where(eq(albums.id, album.id));
   return c.json({ ok: true });
 });

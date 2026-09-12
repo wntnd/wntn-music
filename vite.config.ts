@@ -11,9 +11,9 @@ export default defineConfig({
     },
   },
   server: {
-    // dev: forward /api to the local backend (compose publishes it on :3000)
+    // dev: forward /api to the Worker (`pnpm dev` in server/ runs it on :8787)
     proxy: {
-      "/api": "http://localhost:3000",
+      "/api": "http://localhost:8787",
     },
   },
 })

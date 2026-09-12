@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { users, artists } from "../db/schema";
+import { users, artists, loginAttempts } from "../db/schema";
 import {
   hashPassword,
   verifyPassword,
@@ -11,7 +11,6 @@ import {
   currentUser,
   isAdminRole,
 } from "../auth";
-import { redis } from "../redis";
 import { newId, slugify, type AppEnv } from "../types";
 
 export const authRoutes = new Hono<AppEnv>();
@@ -32,7 +31,7 @@ authRoutes.post("/signup", async (c) => {
   const { username, email, password } = body.data;
   const lower = username.toLowerCase();
 
-  const taken = await db
+  const taken = await db()
     .select({ id: users.id })
     .from(users)
     .where(
@@ -43,7 +42,7 @@ authRoutes.post("/signup", async (c) => {
 
   // Username must not impersonate an artist (by slug or name). The real artist
   // gets the name back through the claim flow, not by racing for the username.
-  const artistClash = await db
+  const artistClash = await db()
     .select({ id: artists.id })
     .from(artists)
     .where(or(eq(artists.slug, slugify(username)), sql`lower(${artists.name}) = ${lower}`))
@@ -52,7 +51,7 @@ authRoutes.post("/signup", async (c) => {
     return c.json({ error: "это имя артиста — запросите доступ на его странице" }, 409);
 
   const id = newId();
-  await db.insert(users).values({
+  await db().insert(users).values({
     id,
     username,
     email,
@@ -79,18 +78,32 @@ authRoutes.post("/login", async (c) => {
   const { login, password } = body.data;
 
   const ip =
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? c.req.header("x-real-ip") ?? "local";
-  const attemptKey = `login:${ip}:${login.toLowerCase()}`;
-  const attempts = Number((await redis.get(attemptKey)) ?? 0);
-  if (attempts >= LOGIN_ATTEMPT_LIMIT)
+    c.req.header("cf-connecting-ip") ??
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+    "local";
+  const attemptKey = `${ip}:${login.toLowerCase()}`;
+  const now = new Date();
+  const [attempt] = await db()
+    .select()
+    .from(loginAttempts)
+    .where(eq(loginAttempts.key, attemptKey))
+    .limit(1);
+  const active = attempt !== undefined && attempt.resetAt > now;
+  if (active && attempt.count >= LOGIN_ATTEMPT_LIMIT)
     return c.json({ error: "слишком много попыток, подождите" }, 429);
 
+  // ponytail: read-then-write, so racing failures can drop one increment —
+  // an attacker gains a single attempt. Do it in one statement if that matters.
   const fail = async () => {
-    const n = await redis.incr(attemptKey);
-    if (n === 1) await redis.expire(attemptKey, LOGIN_WINDOW);
+    const count = active ? attempt.count + 1 : 1;
+    const resetAt = active ? attempt.resetAt : new Date(now.getTime() + LOGIN_WINDOW * 1000);
+    await db()
+      .insert(loginAttempts)
+      .values({ key: attemptKey, count, resetAt })
+      .onConflictDoUpdate({ target: loginAttempts.key, set: { count, resetAt } });
   };
 
-  const found = await db
+  const found = await db()
     .select()
     .from(users)
     .where(or(eq(users.username, login), eq(users.email, login)))
@@ -102,7 +115,7 @@ authRoutes.post("/login", async (c) => {
   }
   if (user.bannedAt) return c.json({ error: "аккаунт заблокирован" }, 403);
 
-  await redis.del(attemptKey);
+  await db().delete(loginAttempts).where(eq(loginAttempts.key, attemptKey));
   await createSession(c, user.id);
   return c.json({ id: user.id, username: user.username });
 });
@@ -115,7 +128,7 @@ authRoutes.post("/logout", async (c) => {
 authRoutes.get("/me", async (c) => {
   const me = await currentUser(c);
   if (!me || me.bannedAt) return c.json({ user: null });
-  const found = await db
+  const found = await db()
     .select({
       id: users.id,
       username: users.username,

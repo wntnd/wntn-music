@@ -9,7 +9,7 @@ export const userRoutes = new Hono<AppEnv>();
 // GET /api/users/:username — public profile: info + public playlists + owned artist
 userRoutes.get("/:username", async (c) => {
   const username = param(c, "username").toLowerCase();
-  const found = await db
+  const found = await db()
     .select({
       id: users.id,
       username: users.username,
@@ -25,11 +25,11 @@ userRoutes.get("/:username", async (c) => {
   if (!user) return c.json({ error: "not found" }, 404);
 
   const [publicPlaylists, ownedArtist] = await Promise.all([
-    db
+    db()
       .select({ id: playlists.id, title: playlists.title, cover: playlists.cover })
       .from(playlists)
       .where(and(eq(playlists.userId, user.id), eq(playlists.isPublic, true))),
-    db
+    db()
       .select({ slug: artists.slug, name: artists.name })
       .from(artists)
       .where(eq(artists.userId, user.id))

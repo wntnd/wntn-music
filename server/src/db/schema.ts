@@ -6,6 +6,7 @@ import {
   boolean,
   timestamp,
   primaryKey,
+  index,
 } from "drizzle-orm/pg-core";
 
 export const albumType = pgEnum("album_type", ["album", "ep", "single"]);
@@ -33,6 +34,27 @@ export const users = pgTable("users", {
   playbackSync: playbackSync("playback_sync").notNull().default("tabs"),
   bannedAt: timestamp("banned_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Session store. Replaced Redis: the session row is joined with users on every
+// authed request, so resolving a caller costs the one query it already cost.
+// ponytail: expired rows just accumulate; add a cron delete if it ever matters.
+export const sessions = pgTable("sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at").notNull(),
+}, (t) => ({
+  byUser: index("sessions_user_id_idx").on(t.userId),
+}));
+
+// Failed-login counter. Replaced Redis: the Workers rate-limit binding only
+// does 10s/60s windows, and this policy is 10 failures per 15 minutes.
+export const loginAttempts = pgTable("login_attempts", {
+  key: text("key").primaryKey(), // ip:login
+  count: integer("count").notNull().default(0),
+  resetAt: timestamp("reset_at").notNull(),
 });
 
 export const artists = pgTable("artists", {

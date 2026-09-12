@@ -1,7 +1,14 @@
 import type { Context } from "hono";
 import { createHash } from "node:crypto";
 
-export type AppEnv = { Variables: { userId: string; role: "user" | "admin" | "root" } };
+// Env is generated from wrangler.jsonc by `wrangler types`; ASSETS is the
+// static-file fetcher Pages injects and does not appear in that file.
+export type Bindings = Env & { ASSETS: Fetcher };
+
+export type AppEnv = {
+  Bindings: Bindings;
+  Variables: { userId: string; role: "user" | "admin" | "root" };
+};
 
 // Hono types param() as string|undefined for non-literal keys; routes guarantee presence.
 export function param(c: Context, name: string): string {

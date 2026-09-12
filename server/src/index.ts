@@ -1,4 +1,3 @@
-import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { env } from "./env";
@@ -19,14 +18,13 @@ import { meRoutes } from "./routes/me";
 import { manageRoutes } from "./routes/manage";
 import { lyricsRoutes } from "./routes/lyrics";
 import { userRoutes } from "./routes/users";
-import { bootstrapRoots } from "./auth";
-import { backfillTrackSlugs } from "./backfill";
-import type { AppEnv } from "./types";
+import { runWith, type ReqCtx } from "./ctx";
+import type { AppEnv, Bindings } from "./types";
 
 const app = new Hono<AppEnv>();
 
-// same-origin in prod (Caddy serves both), but keep CORS correct for any
-// configured domain — echo back only origins we know.
+// same-origin in prod (one Worker serves the SPA and the API), but keep CORS
+// correct for any configured domain — echo back only origins we know.
 app.use(
   "*",
   cors({
@@ -54,9 +52,26 @@ app.route("/api/manage", manageRoutes);
 app.route("/api/lyrics", lyricsRoutes);
 app.route("/api/users", userRoutes);
 
-bootstrapRoots().catch((e) => console.error("bootstrapRoots failed:", e));
-backfillTrackSlugs().catch((e) => console.error("backfillTrackSlugs failed:", e));
+// Per request: hand the routes the R2 bucket and a DB connection, then close
+// the connection. A pool that outlives the request would be reused across
+// request contexts, which Workers answer by hanging the next caller.
+// Roots are promoted by `pnpm bootstrap` — a Worker has no startup hook.
+export default {
+  fetch(req, bindings, ctx) {
+    // Pages routes every request here, unlike a Worker with static assets where
+    // the platform serves files itself. Anything that is not the API is a file.
+    if (!new URL(req.url).pathname.startsWith("/api/")) return bindings.ASSETS.fetch(req);
 
-serve({ fetch: app.fetch, port: env.port }, (info) => {
-  console.log(`wntn api on :${info.port}`);
-});
+    const store: ReqCtx = {
+      connectionString: bindings.HYPERDRIVE.connectionString,
+      bucket: bindings.BUCKET,
+    };
+    return runWith(store, async () => {
+      try {
+        return await app.fetch(req, bindings, ctx);
+      } finally {
+        if (store.handle) ctx.waitUntil(store.handle.pool.end());
+      }
+    });
+  },
+} satisfies ExportedHandler<Bindings>;

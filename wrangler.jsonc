@@ -1,0 +1,24 @@
+{
+  "$schema": "server/node_modules/wrangler/config-schema.json",
+  "name": "wntn-music",
+  // Pages, not Workers: the wntn.one zone lives in a different Cloudflare
+  // account, and only Pages lets a domain from another account point in via a
+  // CNAME. Workers refuses outright ("zone does not exist on your account").
+  "pages_build_output_dir": "dist",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // workerd cannot negotiate postgres' TLS upgrade itself, so nothing talks to
+  // Supabase directly — Hyperdrive holds the connection outside the isolate and
+  // hands over a plaintext local endpoint. Query caching is off so reads stay
+  // as fresh as they were before the move.
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "dfcf8b01face458da95d56b5ea69ad23" }],
+
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "wntn-music" }],
+
+  "vars": {
+    "WEB_ORIGIN": "https://music.wntn.one",
+    "R2_PUBLIC_BASE_URL": "https://wntn-music.partner.dvxch.net",
+    "ADMIN_USERNAMES": "wntnroot"
+  }
+}

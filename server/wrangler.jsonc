@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Build-only config: `pnpm build` at the repo root uses it to bundle the API
+  // into dist/_worker.js. Bindings, vars and the domain live in the Pages
+  // config at the repo root — this file deploys nothing.
+  "name": "wntn-music-bundle",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"]
+}

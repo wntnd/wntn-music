@@ -17,7 +17,7 @@ searchRoutes.get("/", async (c) => {
   const like = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
 
   const [trackRows, artistRows, albumRows] = await Promise.all([
-    db
+    db()
       .select({
         id: tracks.id,
         slug: tracks.slug,
@@ -36,7 +36,7 @@ searchRoutes.get("/", async (c) => {
       .where(or(ilike(tracks.title, like), ilike(artists.name, like)))
       .orderBy(desc(tracks.plays))
       .limit(LIMIT),
-    db
+    db()
       .select({
         id: artists.id,
         slug: artists.slug,
@@ -49,7 +49,7 @@ searchRoutes.get("/", async (c) => {
       .where(ilike(artists.name, like))
       .groupBy(artists.id)
       .limit(LIMIT),
-    db
+    db()
       .select({
         id: albums.id,
         title: albums.title,

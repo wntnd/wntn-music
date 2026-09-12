@@ -5,13 +5,16 @@
   "type": "module",
   "packageManager": "pnpm@10.17.1",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && rm -rf dist/audio dist/track-list.json && cd server && ./node_modules/.bin/wrangler deploy --dry-run --outdir .wrangler/bundle >/dev/null && cp .wrangler/bundle/index.js ../dist/_worker.js",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "pnpm build && server/node_modules/.bin/wrangler pages deploy"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",

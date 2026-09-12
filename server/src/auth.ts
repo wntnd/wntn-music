@@ -1,11 +1,10 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { eq, inArray, sql } from "drizzle-orm";
-import { redis } from "./redis";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import { env } from "./env";
 import { db } from "./db";
-import { users } from "./db/schema";
+import { users, sessions } from "./db/schema";
 
 const SESSION_TTL = 60 * 60 * 24 * 30; // 30 days
 const COOKIE = "sid";
@@ -27,60 +26,62 @@ export function verifyPassword(password: string, stored: string): boolean {
   return test.length === orig.length && timingSafeEqual(test, orig);
 }
 
-// sessions are tracked per user so a ban can revoke every one of them
-const sessionSetKey = (userId: string) => `user-sessions:${userId}`;
+// A session is live while its row exists and has not expired.
+const live = (sid: string) => and(eq(sessions.id, sid), gt(sessions.expiresAt, new Date()));
 
 export async function createSession(c: Context, userId: string) {
   const sid = randomBytes(24).toString("hex");
-  await redis.set(`sess:${sid}`, userId, "EX", SESSION_TTL);
-  await redis.sadd(sessionSetKey(userId), sid);
-  await redis.expire(sessionSetKey(userId), SESSION_TTL);
+  await db()
+    .insert(sessions)
+    .values({ id: sid, userId, expiresAt: new Date(Date.now() + SESSION_TTL * 1000) });
   setCookie(c, COOKIE, sid, {
     httpOnly: true,
     sameSite: "Lax",
     path: "/",
-    secure: env.cookieSecure,
+    // https-only in prod; browsers accept Secure cookies on http://localhost
+    secure: true,
     maxAge: SESSION_TTL,
   });
 }
 
 export async function destroySession(c: Context) {
   const sid = getCookie(c, COOKIE);
-  if (sid) {
-    const userId = await redis.get(`sess:${sid}`);
-    await redis.del(`sess:${sid}`);
-    if (userId) await redis.srem(sessionSetKey(userId), sid);
-  }
+  if (sid) await db().delete(sessions).where(eq(sessions.id, sid));
   deleteCookie(c, COOKIE, { path: "/" });
 }
 
 // Ban must cut existing sessions: read-only routes resolve the user without
 // requireAuth, so a live session would keep working until they mutate something.
 export async function revokeAllSessions(userId: string) {
-  const sids = await redis.smembers(sessionSetKey(userId));
-  if (sids.length) await redis.del(...sids.map((s) => `sess:${s}`));
-  await redis.del(sessionSetKey(userId));
+  await db().delete(sessions).where(eq(sessions.userId, userId));
 }
 
 export async function currentUserId(c: Context): Promise<string | null> {
   const sid = getCookie(c, COOKIE);
   if (!sid) return null;
-  return await redis.get(`sess:${sid}`);
+  const found = await db()
+    .select({ userId: sessions.userId })
+    .from(sessions)
+    .where(live(sid))
+    .limit(1);
+  return found[0]?.userId ?? null;
 }
 
 // Session user row (role + ban state). Null if not logged in or user deleted.
+// Joined, so resolving the caller is the single query it always was.
 export async function currentUser(c: Context) {
-  const uid = await currentUserId(c);
-  if (!uid) return null;
-  const found = await db
+  const sid = getCookie(c, COOKIE);
+  if (!sid) return null;
+  const found = await db()
     .select({
       id: users.id,
       username: users.username,
       role: users.role,
       bannedAt: users.bannedAt,
     })
-    .from(users)
-    .where(eq(users.id, uid))
+    .from(sessions)
+    .innerJoin(users, eq(sessions.userId, users.id))
+    .where(live(sid))
     .limit(1);
   return found[0] ?? null;
 }
@@ -124,13 +125,13 @@ export async function requireRoot(c: Context, next: Next) {
 // every restart. After the first root exists, grants happen in /admin.
 export async function bootstrapRoots() {
   if (!env.adminUsernames.length) return;
-  const existing = await db
+  const existing = await db()
     .select({ id: users.id })
     .from(users)
     .where(eq(users.role, "root"))
     .limit(1);
   if (existing.length) return;
-  await db
+  await db()
     .update(users)
     .set({ role: "root" })
     .where(inArray(sql`lower(${users.username})`, env.adminUsernames));

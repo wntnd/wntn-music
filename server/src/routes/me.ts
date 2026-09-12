@@ -29,7 +29,7 @@ meRoutes.post("/avatar", bodyLimit({ maxSize: 10 * 1024 * 1024 }), async (c) => 
   if (!img) return c.json({ error: "image only (jpg/png/webp)" }, 400);
   const avatarKey = `avatars/user/${userId}.${img.ext}`;
   await putObject(avatarKey, img.bytes, img.contentType);
-  await db
+  await db()
     .update(users)
     .set({ avatarKey, avatar: `/api/avatar/user/${userId}` })
     .where(eq(users.id, userId));
@@ -42,7 +42,7 @@ meRoutes.put("/settings", async (c) => {
     .object({ playbackSync: z.enum(["off", "tabs", "full"]) })
     .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
-  await db.update(users).set(body.data).where(eq(users.id, c.get("userId")));
+  await db().update(users).set(body.data).where(eq(users.id, c.get("userId")));
   return c.json({ ok: true });
 });
 
@@ -50,7 +50,7 @@ meRoutes.put("/settings", async (c) => {
 meRoutes.get("/library", async (c) => {
   const userId = c.get("userId");
   const [liked, myPlaylists, following, mySavedAlbums, savedPlaylists] = await Promise.all([
-    db
+    db()
       .select({
         id: tracks.id,
         title: tracks.title,
@@ -63,13 +63,13 @@ meRoutes.get("/library", async (c) => {
       .innerJoin(tracks, eq(likes.trackId, tracks.id))
       .innerJoin(artists, eq(tracks.artistId, artists.id))
       .where(eq(likes.userId, userId)),
-    db.select().from(playlists).where(eq(playlists.userId, userId)),
-    db
+    db().select().from(playlists).where(eq(playlists.userId, userId)),
+    db()
       .select({ slug: artists.slug, name: artists.name, avatar: artists.avatar })
       .from(follows)
       .innerJoin(artists, eq(follows.artistId, artists.id))
       .where(eq(follows.userId, userId)),
-    db
+    db()
       .select({
         id: albums.id,
         title: albums.title,
@@ -81,7 +81,7 @@ meRoutes.get("/library", async (c) => {
       .innerJoin(albums, eq(savedAlbums.albumId, albums.id))
       .innerJoin(artists, eq(albums.artistId, artists.id))
       .where(eq(savedAlbums.userId, userId)),
-    db
+    db()
       .select({
         id: playlists.id,
         title: playlists.title,
@@ -110,18 +110,18 @@ meRoutes.get("/library", async (c) => {
 meRoutes.post("/saved-albums/:albumId", async (c) => {
   const userId = c.get("userId");
   const albumId = param(c, "albumId");
-  const existing = await db
+  const existing = await db()
     .select()
     .from(savedAlbums)
     .where(and(eq(savedAlbums.userId, userId), eq(savedAlbums.albumId, albumId)))
     .limit(1);
   if (existing.length) {
-    await db
+    await db()
       .delete(savedAlbums)
       .where(and(eq(savedAlbums.userId, userId), eq(savedAlbums.albumId, albumId)));
     return c.json({ saved: false });
   }
-  await db.insert(savedAlbums).values({ userId, albumId }).onConflictDoNothing();
+  await db().insert(savedAlbums).values({ userId, albumId }).onConflictDoNothing();
   return c.json({ saved: true });
 });
 
@@ -129,25 +129,25 @@ meRoutes.post("/saved-albums/:albumId", async (c) => {
 meRoutes.post("/follows/:artistId", async (c) => {
   const userId = c.get("userId");
   const artistId = param(c, "artistId");
-  const existing = await db
+  const existing = await db()
     .select()
     .from(follows)
     .where(and(eq(follows.userId, userId), eq(follows.artistId, artistId)))
     .limit(1);
   if (existing.length) {
-    await db
+    await db()
       .delete(follows)
       .where(and(eq(follows.userId, userId), eq(follows.artistId, artistId)));
     return c.json({ following: false });
   }
-  await db.insert(follows).values({ userId, artistId }).onConflictDoNothing();
+  await db().insert(follows).values({ userId, artistId }).onConflictDoNothing();
   return c.json({ following: true });
 });
 
 // GET /api/me/artist — the artist profile this user owns, if any
 meRoutes.get("/artist", async (c) => {
   const userId = c.get("userId");
-  const found = await db
+  const found = await db()
     .select()
     .from(artists)
     .where(eq(artists.userId, userId))
@@ -159,18 +159,18 @@ meRoutes.get("/artist", async (c) => {
 meRoutes.post("/likes/:trackId", async (c) => {
   const userId = c.get("userId");
   const trackId = param(c, "trackId");
-  const existing = await db
+  const existing = await db()
     .select()
     .from(likes)
     .where(and(eq(likes.userId, userId), eq(likes.trackId, trackId)))
     .limit(1);
   if (existing.length) {
-    await db
+    await db()
       .delete(likes)
       .where(and(eq(likes.userId, userId), eq(likes.trackId, trackId)));
     return c.json({ liked: false });
   }
-  await db.insert(likes).values({ userId, trackId }).onConflictDoNothing();
+  await db().insert(likes).values({ userId, trackId }).onConflictDoNothing();
   return c.json({ liked: true });
 });
 
@@ -186,7 +186,7 @@ meRoutes.put("/playlists/:id", async (c) => {
     })
     .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
-  await db
+  await db()
     .update(playlists)
     .set(body.data)
     .where(and(eq(playlists.id, id), eq(playlists.userId, userId)));

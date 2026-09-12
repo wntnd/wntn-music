@@ -11,7 +11,7 @@ export const commentRoutes = new Hono<AppEnv>();
 // GET /api/comments/:trackId — newest first, with author name
 commentRoutes.get("/:trackId", async (c) => {
   const trackId = param(c, "trackId");
-  const rows = await db
+  const rows = await db()
     .select({
       id: comments.id,
       content: comments.content,
@@ -40,7 +40,7 @@ commentRoutes.post("/:trackId", requireAuth, async (c) => {
     .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
   const id = newId();
-  await db.insert(comments).values({ id, trackId, userId, content: body.data.content });
+  await db().insert(comments).values({ id, trackId, userId, content: body.data.content });
   return c.json({ id });
 });
 
@@ -50,6 +50,6 @@ commentRoutes.delete("/id/:commentId", requireAuth, async (c) => {
   const own = isAdminRole(c.get("role"))
     ? eq(comments.id, param(c, "commentId"))
     : and(eq(comments.id, param(c, "commentId")), eq(comments.userId, userId));
-  await db.delete(comments).where(own);
+  await db().delete(comments).where(own);
   return c.json({ ok: true });
 });

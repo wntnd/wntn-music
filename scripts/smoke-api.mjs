@@ -1,5 +1,5 @@
-// End-to-end backend smoke test against http://localhost:3000
-const BASE = "http://localhost:3000/api";
+// End-to-end backend smoke test against the local Worker (`pnpm dev` in server/)
+const BASE = process.env.SMOKE_BASE ?? "http://localhost:8787/api";
 let cookie = "";
 
 async function call(path, opts = {}) {

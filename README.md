@@ -6,66 +6,79 @@
 ## Стек
 
 - **Фронт:** Vite + React + TS + Tailwind (дизайн в духе cobalt.tools, шрифты IBM Plex + Unbounded)
-- **API:** Node + Hono + Drizzle
-- **БД:** Postgres 16 · **кэш/сессии:** Redis 7
-- **Файлы:** S3-совместимое хранилище (в проде **Cloudflare R2**) — аудио через `/api/audio/:id` (302 → публичный домен бакета)
-- **Прокси/TLS:** Caddy · всё в Docker Compose
+- **API:** Cloudflare Pages Functions + Hono + Drizzle
+- **БД:** Postgres (Supabase) через Hyperdrive. Сессии и счётчик неудачных логинов лежат там же — Redis больше нет
+- **Файлы:** Cloudflare R2 через биндинг — аудио отдаётся `/api/audio/:id` (302 → публичный домен бакета)
+- **Раздача:** один Pages-проект отдаёт и фронт, и API, отдельного прокси нет
 
-## Быстрый старт (Docker)
+## Быстрый старт (локально)
 
-```bash
-cp .env.example .env        # впиши SESSION_SECRET, POSTGRES_PASSWORD
-docker compose up -d --build
-docker compose run --rm api pnpm db:push   # схема
-docker compose run --rm api pnpm seed      # импорт треков из public/ в S3
-```
-
-Открыть **http://localhost** (Caddy отдаёт фронт и проксит `/api`).
-
-## Локальная разработка (без полного Docker)
-
-Подними только хранилища, остальное на хосте:
+Локально воркер ходит не в Supabase, а в свой постгрес — так настроен
+`localConnectionString` у биндинга Hyperdrive в `wrangler.jsonc`:
 
 ```bash
-docker compose up -d db redis
-cd server && S3_ENDPOINT=http://localhost:9000 \
-  DATABASE_URL=postgres://wntn:$POSTGRES_PASSWORD@localhost:5432/wntn \
-  REDIS_URL=redis://localhost:6379 SESSION_SECRET=dev pnpm db:push && pnpm seed && pnpm dev
-pnpm dev   # фронт в другом терминале — vite проксит /api на :3000
+docker run -d --name wntn-local -p 5432:5432 \
+  -e POSTGRES_USER=wntn -e POSTGRES_PASSWORD=wntn -e POSTGRES_DB=wntn postgres:16-alpine
+
+cd server
+cp .env.example .env    # DATABASE_URL нужен только скриптам на Node
+pnpm db:push            # схема в базу из DATABASE_URL
+pnpm bootstrap          # выдать root из ADMIN_USERNAMES (раньше это делал старт сервера)
+pnpm dev                # воркер на :8787, отдаёт и API, и фронт из ../dist
 ```
 
-## Хранилище — любой S3
+Порт обязательно публиковать на `127.0.0.1`: до внутреннего docker-адреса
+воркер не достучится.
 
-`server/src/storage.ts` работает с любым S3 через env:
+Фронт с горячей перезагрузкой — в другом терминале: `pnpm dev` в корне, vite проксит `/api` на `:8787`.
 
-| | Cloudflare R2 (прод) | rustfs/MinIO (свой сервер) |
-|---|---|---|
-| `S3_ENDPOINT` | `https://<account>.r2.cloudflarestorage.com` | `http://localhost:9000` |
-| `S3_PUBLIC_BASE_URL` | публичный домен бакета | — |
-| `S3_PUBLIC_ENDPOINT` | — | домен, доступный браузеру |
-| `S3_FORCE_PATH_STYLE` | `false` | `true` |
+## Почему Hyperdrive
 
-С `S3_PUBLIC_BASE_URL` ссылки — обычные `<домен>/<key>`, их кэширует CDN.
-Без неё api подписывает URL на `S3_PUBLIC_ENDPOINT` (он должен быть доступен браузеру).
-Локальное хранилище поднимается отдельно: `docker run -d -p 9000:9000 -v wntn-s3:/data rustfs/rustfs /data`.
+workerd не умеет поднимать TLS по протоколу postgres: соединение с Supabase
+рвётся и с проверкой сертификата, и без неё. Hyperdrive держит соединение вне
+изолята и отдаёт воркеру локальный незашифрованный эндпоинт. Кеш запросов у
+конфига выключен, чтобы чтение оставалось таким же свежим, как раньше.
 
-## Деплой на VPS
+Скрипты на Node ходят в Supabase напрямую, и им нужен приватный корневой
+сертификат Supabase — он лежит в `server/src/db/supabase-ca.ts`.
 
-1. `DOMAIN=твой.домен`, `COOKIE_SECURE=true` и блок R2 (`S3_*`) в `.env`
-2. `docker compose up -d --build` (Caddy сам возьмёт TLS)
-3. Первый раз: `docker compose run --rm api pnpm db:push && docker compose run --rm api pnpm seed`
+## Хранилище
+
+R2 подключён биндингом `BUCKET` в `server/wrangler.jsonc` — ни ключей, ни
+подписи URL больше нет. Публичный домен бакета лежит в `R2_PUBLIC_BASE_URL`,
+ссылки обычные `<домен>/<key>`, их кэширует CDN.
+
+## Деплой
+
+```bash
+pnpm deploy   # в корне: собирает фронт, пакует API в dist/_worker.js, заливает в Pages
+```
+
+Сборка делает три вещи: `vite build` кладёт фронт в `dist/`, потом оттуда
+вырезается `dist/audio` (74 МБ исходных mp3 живут в R2, в деплой им не надо),
+потом API пакуется в один файл `dist/_worker.js`. Pages отдаёт статику сам, а
+всё, что начинается на `/api/`, уходит в этот файл.
+
+Сайт живёт на `music.wntn.one`. Зона `wntn.one` лежит в аккаунте `wntn`, а
+проект в `linia account`, и это единственная причина, по которой выбран Pages:
+Workers отказывается цеплять домен из чужого аккаунта («zone does not exist on
+your account»), а Pages разрешает, если руками прописать CNAME на
+`wntn-music-4ju.pages.dev` без проксирования.
 
 ## Добавить треки
 
-- **UI:** `/studio` → профиль артиста → создать трек → залить mp3 (версию) и обложку (летят в S3).
-- **Пачкой:** mp3 в `public/audio/<артист>/` → `python generate-songs-ts.py` → `docker compose run --rm api pnpm seed`.
+- **UI:** `/studio` → профиль артиста → создать трек → залить mp3 (версию) и обложку (летят в R2).
+- **Пачкой:** пакетного импорта больше нет — скрипт `seed` жил на `node:fs` и
+  локальном диске, которых у воркера нет. Исходники в `public/audio/` остались,
+  но в деплой не едут: `pnpm build` вырезает их из `dist/`.
 
 ## Структура
 
 ```
-src/            фронт (компоненты, hooks, lib/api.ts)
-server/src/     API (routes/, db/schema.ts, storage.ts, auth.ts)
-public/         обложки, track-list.json (mp3 уходят в S3)
-docker-compose.yml · Caddyfile · Dockerfile.web · server/Dockerfile
-PLAN.md         полный план и статус
+src/                    фронт (компоненты, hooks, lib/api.ts)
+server/src/             воркер (routes/, db/schema.ts, storage.ts, auth.ts, ctx.ts)
+wrangler.jsonc          конфиг Pages: биндинги R2 и Hyperdrive, переменные
+server/wrangler.jsonc    только сборка: пакует API в dist/_worker.js
+public/                 обложки (mp3 лежат в гите, но сборка их выкидывает)
+PLAN.md                 полный план и статус
 ```

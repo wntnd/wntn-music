@@ -13,7 +13,7 @@ const isLrc = (s: string) => /\[\d+:\d+(?:[.:]\d+)?\]/.test(s);
 // Can this user moderate lyrics for the track? Artist owner or admin.
 async function canModerate(trackId: string, userId: string, role: AppEnv["Variables"]["role"]) {
   if (isAdminRole(role)) return true;
-  const found = await db
+  const found = await db()
     .select({ ownerId: artists.userId })
     .from(tracks)
     .innerJoin(artists, eq(tracks.artistId, artists.id))
@@ -31,7 +31,7 @@ lyricsRoutes.post("/:trackId/edits", requireAuth, async (c) => {
     .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
 
-  const track = await db.select({ id: tracks.id }).from(tracks).where(eq(tracks.id, trackId)).limit(1);
+  const track = await db().select({ id: tracks.id }).from(tracks).where(eq(tracks.id, trackId)).limit(1);
   if (!track.length) return c.json({ error: "not found" }, 404);
 
   // owner/admin edits apply instantly — no self-moderation loop
@@ -40,7 +40,7 @@ lyricsRoutes.post("/:trackId/edits", requireAuth, async (c) => {
     return c.json({ applied: true });
   }
 
-  const dup = await db
+  const dup = await db()
     .select({ id: lyricsEdits.id })
     .from(lyricsEdits)
     .where(
@@ -54,7 +54,7 @@ lyricsRoutes.post("/:trackId/edits", requireAuth, async (c) => {
   if (dup.length) return c.json({ error: "ваша правка уже на модерации" }, 409);
 
   const id = newId();
-  await db.insert(lyricsEdits).values({ id, trackId, userId, content: body.data.content });
+  await db().insert(lyricsEdits).values({ id, trackId, userId, content: body.data.content });
   return c.json({ id, status: "pending" });
 });
 
@@ -63,7 +63,7 @@ lyricsRoutes.get("/:trackId/edits", requireAuth, async (c) => {
   const trackId = param(c, "trackId");
   if (!(await canModerate(trackId, c.get("userId"), c.get("role"))))
     return c.json({ error: "forbidden" }, 403);
-  const rows = await db
+  const rows = await db()
     .select({
       id: lyricsEdits.id,
       content: lyricsEdits.content,
@@ -79,7 +79,7 @@ lyricsRoutes.get("/:trackId/edits", requireAuth, async (c) => {
 
 async function applyLyrics(trackId: string, content: string) {
   const isSynced = isLrc(content);
-  await db
+  await db()
     .insert(lyrics)
     .values({ trackId, content, isSynced })
     .onConflictDoUpdate({ target: lyrics.trackId, set: { content, isSynced } });
@@ -89,7 +89,7 @@ async function applyLyrics(trackId: string, content: string) {
 lyricsRoutes.post("/edits/:id/:action", requireAuth, async (c) => {
   const action = param(c, "action");
   if (action !== "approve" && action !== "reject") return c.json({ error: "not found" }, 404);
-  const found = await db
+  const found = await db()
     .select()
     .from(lyricsEdits)
     .where(eq(lyricsEdits.id, param(c, "id")))
@@ -100,7 +100,7 @@ lyricsRoutes.post("/edits/:id/:action", requireAuth, async (c) => {
     return c.json({ error: "forbidden" }, 403);
 
   if (action === "approve") await applyLyrics(edit.trackId, edit.content);
-  await db
+  await db()
     .update(lyricsEdits)
     .set({ status: action === "approve" ? "approved" : "rejected" })
     .where(eq(lyricsEdits.id, edit.id));

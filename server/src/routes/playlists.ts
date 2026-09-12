@@ -14,14 +14,14 @@ export const playlistRoutes = new Hono<AppEnv>();
 // GET /api/playlists/:id — public, or own
 playlistRoutes.get("/:id", async (c) => {
   const id = param(c, "id");
-  const found = await db.select().from(playlists).where(eq(playlists.id, id)).limit(1);
+  const found = await db().select().from(playlists).where(eq(playlists.id, id)).limit(1);
   const pl = found[0];
   if (!pl) return c.json({ error: "not found" }, 404);
   if (!pl.isPublic && (await currentUserId(c)) !== pl.userId)
     return c.json({ error: "forbidden" }, 403);
 
   // song included so the page can play without loading the whole catalog
-  const rows = await db
+  const rows = await db()
     .select({
       id: tracks.id,
       title: tracks.title,
@@ -42,12 +42,12 @@ playlistRoutes.get("/:id", async (c) => {
   }));
 
   const [ownerRow, uid] = await Promise.all([
-    db.select({ username: users.username }).from(users).where(eq(users.id, pl.userId)).limit(1),
+    db().select({ username: users.username }).from(users).where(eq(users.id, pl.userId)).limit(1),
     currentUserId(c),
   ]);
   const saved = uid
     ? (
-        await db
+        await db()
           .select({ userId: playlistFollows.userId })
           .from(playlistFollows)
           .where(and(eq(playlistFollows.userId, uid), eq(playlistFollows.playlistId, id)))
@@ -80,7 +80,7 @@ playlistRoutes.post("/", requireAuth, async (c) => {
   const body = createSchema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid input" }, 400);
   const id = newId();
-  await db.insert(playlists).values({
+  await db().insert(playlists).values({
     id,
     userId,
     title: body.data.title,
@@ -90,7 +90,7 @@ playlistRoutes.post("/", requireAuth, async (c) => {
 });
 
 async function ownsPlaylist(playlistId: string, userId: string) {
-  const found = await db
+  const found = await db()
     .select({ userId: playlists.userId })
     .from(playlists)
     .where(eq(playlists.id, playlistId))
@@ -110,7 +110,7 @@ playlistRoutes.post(
     if (!img) return c.json({ error: "image only (jpg/png/webp)" }, 400);
     const coverKey = `covers/playlist/${id}.${img.ext}`;
     await putObject(coverKey, img.bytes, img.contentType);
-    await db
+    await db()
       .update(playlists)
       .set({ coverKey, cover: `/api/cover/playlist/${id}` })
       .where(eq(playlists.id, id));
@@ -122,23 +122,23 @@ playlistRoutes.post(
 playlistRoutes.post("/:id/save", requireAuth, async (c) => {
   const userId = c.get("userId");
   const id = param(c, "id");
-  const found = await db.select().from(playlists).where(eq(playlists.id, id)).limit(1);
+  const found = await db().select().from(playlists).where(eq(playlists.id, id)).limit(1);
   const pl = found[0];
   if (!pl) return c.json({ error: "not found" }, 404);
   if (!pl.isPublic && pl.userId !== userId) return c.json({ error: "forbidden" }, 403);
 
-  const existing = await db
+  const existing = await db()
     .select()
     .from(playlistFollows)
     .where(and(eq(playlistFollows.userId, userId), eq(playlistFollows.playlistId, id)))
     .limit(1);
   if (existing.length) {
-    await db
+    await db()
       .delete(playlistFollows)
       .where(and(eq(playlistFollows.userId, userId), eq(playlistFollows.playlistId, id)));
     return c.json({ saved: false });
   }
-  await db.insert(playlistFollows).values({ userId, playlistId: id }).onConflictDoNothing();
+  await db().insert(playlistFollows).values({ userId, playlistId: id }).onConflictDoNothing();
   return c.json({ saved: true });
 });
 
@@ -148,7 +148,7 @@ playlistRoutes.delete("/:id", requireAuth, async (c) => {
   const isMod = c.get("role") === "admin" || c.get("role") === "root";
   if (!isMod && !(await ownsPlaylist(id, c.get("userId"))))
     return c.json({ error: "forbidden" }, 403);
-  await db.delete(playlists).where(eq(playlists.id, id));
+  await db().delete(playlists).where(eq(playlists.id, id));
   return c.json({ ok: true });
 });
 
@@ -160,11 +160,11 @@ playlistRoutes.post("/:id/tracks", requireAuth, async (c) => {
   if (!body.success) return c.json({ error: "invalid input" }, 400);
   // max+1, not count: removing a track from the middle leaves gaps, and a
   // count-based position would collide with an existing row.
-  const last = await db
+  const last = await db()
     .select({ n: sql<number>`coalesce(max(${playlistTracks.position}), -1)` })
     .from(playlistTracks)
     .where(eq(playlistTracks.playlistId, id));
-  await db
+  await db()
     .insert(playlistTracks)
     .values({ playlistId: id, trackId: body.data.trackId, position: (last[0]?.n ?? -1) + 1 })
     .onConflictDoNothing();
@@ -182,7 +182,7 @@ playlistRoutes.put("/:id/reorder", requireAuth, async (c) => {
 
   await Promise.all(
     body.data.trackIds.map((trackId, i) =>
-      db
+      db()
         .update(playlistTracks)
         .set({ position: i })
         .where(and(eq(playlistTracks.playlistId, id), eq(playlistTracks.trackId, trackId))),
@@ -195,7 +195,7 @@ playlistRoutes.delete("/:id/tracks/:trackId", requireAuth, async (c) => {
   const userId = c.get("userId");
   const id = param(c, "id");
   if (!(await ownsPlaylist(id, userId))) return c.json({ error: "forbidden" }, 403);
-  await db
+  await db()
     .delete(playlistTracks)
     .where(
       and(eq(playlistTracks.playlistId, id), eq(playlistTracks.trackId, param(c, "trackId"))),

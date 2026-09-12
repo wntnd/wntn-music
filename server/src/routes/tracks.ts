@@ -1,11 +1,10 @@
 import { Hono } from "hono";
-import { eq, desc, inArray, count } from "drizzle-orm";
+import { eq, desc, inArray, count, and, isNotNull, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { tracks, artists, trackVersions, lyrics, trackArtists } from "../db/schema";
-import { redis } from "../redis";
 import { param, trackShortIdFromParam } from "../types";
 
-// Audio is streamed via GET /api/audio/:versionId (302 -> presigned S3 URL),
+// Audio is streamed via GET /api/audio/:versionId (302 -> the R2 public URL),
 // so the catalog only needs to expose the version id, not storage details.
 const audioUrl = (versionId: string | null) =>
   versionId ? `/api/audio/${versionId}` : null;
@@ -15,7 +14,7 @@ export const trackRoutes = new Hono();
 // Attaches featured artists to a page of tracks with one extra query.
 async function withFeatures<T extends { id: string; primaryVersionId: string | null }>(rows: T[]) {
   const featRows = rows.length
-    ? await db
+    ? await db()
         .select({ trackId: trackArtists.trackId, name: artists.name, slug: artists.slug })
         .from(trackArtists)
         .innerJoin(artists, eq(trackArtists.artistId, artists.id))
@@ -46,6 +45,7 @@ const catalogColumns = {
   title: tracks.title,
   cover: tracks.cover,
   plays: tracks.plays,
+  duration: tracks.duration,
   explicit: tracks.explicit,
   author: artists.name,
   authorSlug: artists.slug,
@@ -54,6 +54,11 @@ const catalogColumns = {
 
 const MAX_LIMIT = 100;
 
+/** A track with no audio is a draft: it belongs in the studio, not the catalog.
+ *  Counting drafts in `total` made the numbers lie and stalled infinite scroll,
+ *  because the client drops audio-less rows before rendering them. */
+export const published = isNotNull(tracks.primaryVersionId);
+
 // GET /api/tracks?artist=<slug>&limit=&offset=&sort=new|popular
 // Paginated so the client can load the catalog in pages instead of all at once.
 trackRoutes.get("/", async (c) => {
@@ -61,10 +66,12 @@ trackRoutes.get("/", async (c) => {
   const sort = c.req.query("sort") === "popular" ? "popular" : "new";
   const limit = Math.min(Number(c.req.query("limit") ?? 24) || 24, MAX_LIMIT);
   const offset = Math.max(Number(c.req.query("offset") ?? 0) || 0, 0);
-  const where = slug ? eq(artists.slug, slug) : undefined;
+  const where: SQL | undefined = slug
+    ? and(eq(artists.slug, slug), published)
+    : published;
 
   const [rows, totalRow] = await Promise.all([
-    db
+    db()
       .select(catalogColumns)
       .from(tracks)
       .innerJoin(artists, eq(tracks.artistId, artists.id))
@@ -72,7 +79,7 @@ trackRoutes.get("/", async (c) => {
       .orderBy(sort === "popular" ? desc(tracks.plays) : desc(tracks.createdAt))
       .limit(limit)
       .offset(offset),
-    db
+    db()
       .select({ n: count() })
       .from(tracks)
       .innerJoin(artists, eq(tracks.artistId, artists.id))
@@ -91,7 +98,7 @@ trackRoutes.get("/", async (c) => {
 // 64-hex links, uuids), then falls back to the trailing shortId of a pretty
 // `<slug>-<shortId>` url.
 async function resolveTrackId(paramValue: string): Promise<string | null> {
-  const exact = await db
+  const exact = await db()
     .select({ id: tracks.id })
     .from(tracks)
     .where(eq(tracks.id, paramValue))
@@ -100,7 +107,7 @@ async function resolveTrackId(paramValue: string): Promise<string | null> {
 
   const short = trackShortIdFromParam(paramValue);
   if (!short) return null;
-  const byShort = await db
+  const byShort = await db()
     .select({ id: tracks.id })
     .from(tracks)
     .where(eq(tracks.shortId, short))
@@ -112,7 +119,7 @@ async function resolveTrackId(paramValue: string): Promise<string | null> {
 trackRoutes.get("/:id", async (c) => {
   const id = await resolveTrackId(param(c, "id"));
   if (!id) return c.json({ error: "not found" }, 404);
-  const found = await db
+  const found = await db()
     .select({
       id: tracks.id,
       slug: tracks.slug,
@@ -126,6 +133,7 @@ trackRoutes.get("/:id", async (c) => {
       albumId: tracks.albumId,
       genres: tracks.genres,
       explicit: tracks.explicit,
+      duration: tracks.duration,
       clipKey: tracks.clipKey,
     })
     .from(tracks)
@@ -135,26 +143,23 @@ trackRoutes.get("/:id", async (c) => {
   const track = found[0];
   if (!track) return c.json({ error: "not found" }, 404);
 
-  const versions = await db
+  const versions = await db()
     .select()
     .from(trackVersions)
     .where(eq(trackVersions.trackId, id));
-  const lyr = await db.select().from(lyrics).where(eq(lyrics.trackId, id)).limit(1);
-  const features = await db
+  const lyr = await db().select().from(lyrics).where(eq(lyrics.trackId, id)).limit(1);
+  const features = await db()
     .select({ id: artists.id, name: artists.name, slug: artists.slug })
     .from(trackArtists)
     .innerJoin(artists, eq(trackArtists.artistId, artists.id))
     .where(eq(trackArtists.trackId, id));
-
-  // live play count: Redis buffer may be ahead of the DB (flushes every 20)
-  const buffered = Number((await redis.get(`plays:${id}`)) ?? 0);
 
   const { clipKey, ...rest } = track;
   return c.json({
     ...rest,
     features,
     clip: clipKey ? `/api/clip/${id}` : null,
-    plays: Math.max(track.plays, buffered),
+    plays: track.plays,
     versions: versions.map((v) => ({
       id: v.id,
       kind: v.kind,
@@ -166,20 +171,16 @@ trackRoutes.get("/:id", async (c) => {
   });
 });
 
-// POST /api/play/:id  — buffer in Redis, flush to Postgres every 20 plays.
-// ponytail: cron flush would catch the trailing <20; fine for a friends' site.
+// POST /api/play/:id — one UPDATE per play. The old Redis buffer existed to
+// spare the DB a write per play; at this catalog size that saving is noise.
+// The update also does the existence check: no row, no increment.
 trackRoutes.post("/play/:id", async (c) => {
   const id = param(c, "id");
-  // only count real tracks: an unchecked INCR lets anyone fill Redis with keys
-  const exists = await db.select({ id: tracks.id }).from(tracks).where(eq(tracks.id, id)).limit(1);
-  if (!exists.length) return c.json({ error: "not found" }, 404);
-
-  const n = await redis.incr(`plays:${id}`);
-  if (n % 20 === 0) {
-    await db
-      .update(tracks)
-      .set({ plays: n })
-      .where(eq(tracks.id, id));
-  }
-  return c.json({ plays: n });
+  const [row] = await db()
+    .update(tracks)
+    .set({ plays: sql`${tracks.plays} + 1` })
+    .where(eq(tracks.id, id))
+    .returning({ plays: tracks.plays });
+  if (!row) return c.json({ error: "not found" }, 404);
+  return c.json({ plays: row.plays });
 });
