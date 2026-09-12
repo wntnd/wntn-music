@@ -555,20 +555,39 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
         <IconChevronDown size={20} />
       </button>
 
-      <div className="flex min-h-0 flex-1 items-center justify-center gap-10 px-4 pb-4 lg:px-10 lg:py-6">
-        <div className="flex w-full max-w-sm flex-col items-center justify-center gap-5">
-          <div className="group relative w-full">
+      <div className="flex min-h-0 flex-1 items-stretch justify-center gap-10 px-4 pb-4 lg:px-10 lg:py-6">
+        <div className="flex min-h-0 w-full max-w-sm flex-col items-center justify-center gap-5">
+          {/* The artwork gives up height first. Sized from its width it stayed a
+              full-width square however little room was left, and with the queue
+              open the block below it spilled over the queue instead. */}
+          {/* Two explicit sizes rather than a flexible one: a box cannot both
+              grow into the free height and stay square, and letting flex pick
+              turned the artwork into a letterbox. With the queue open on a
+              phone it steps aside to a thumbnail. */}
+          <div
+            className={
+              "group relative aspect-square shrink-0 " +
+              (showQueue ? "h-32 w-32 lg:h-auto lg:w-full" : "w-full")
+            }
+          >
             <img
               src={current.cover}
               alt=""
-              className="aspect-square w-full rounded-card object-cover shadow-2xl"
+              className="h-full w-full rounded-card object-cover shadow-2xl"
               onError={(e) => {
                 const img = e.currentTarget;
                 if (!img.src.endsWith("/covers/default.jpg")) img.src = "/covers/default.jpg";
               }}
             />
-            {/* controls float over the artwork, like the reference player */}
-            <div className="absolute inset-0 grid place-items-center rounded-card bg-gradient-to-t from-black/55 via-black/10 to-black/25">
+            {/* Controls float over the artwork, like the reference player — but
+                they need 288px of width, and with the queue open the artwork
+                shrinks well below that, so on narrow screens they move out. */}
+            <div
+              className={
+                (showQueue ? "hidden lg:grid" : "grid") +
+                " absolute inset-0 place-items-center rounded-card bg-gradient-to-t from-black/55 via-black/10 to-black/25"
+              }
+            >
               <div className="[&_button]:text-white/80 [&_button:hover]:bg-white/15 [&_button:hover]:text-white">
                 <TransportControls size="lg" />
               </div>
@@ -587,7 +606,7 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
           </div>
 
           {/* title, seek bar and sheet toggles travel together as one block */}
-          <div className="flex w-full flex-col gap-3">
+          <div className="flex w-full shrink-0 flex-col gap-3">
             <div className="w-full text-center">
               <Link
                 to={trackPath(current)}
@@ -605,7 +624,7 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
               </Link>
             </div>
 
-            <div className="h-12 w-full">
+            <div className={(showQueue ? "hidden lg:block " : "") + "h-12 w-full"}>
               <AudioVisualizer playing={isPlaying} />
             </div>
 
@@ -616,6 +635,12 @@ function FullPlayer({ onClose }: { onClose: () => void }) {
                 <span>{formatTime(duration)}</span>
               </div>
             </div>
+
+            {showQueue && (
+              <div className="flex justify-center lg:hidden">
+                <TransportControls size="lg" />
+              </div>
+            )}
 
             <div className="hidden md:block">
               <VolumeControl />
