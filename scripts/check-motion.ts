@@ -25,7 +25,14 @@ const vt = new VelocityTracker();
 assert.equal(vt.get(), 0, "no samples, no velocity");
 vt.add(0, 0);
 vt.add(100, 100); // 100px in 100ms
-assert.ok(Math.abs(vt.get() - 1000) < 1, `expected ~1000 px/s, got ${vt.get()}`);
+// `now` is passed explicitly: the reading is relative to the release, and
+// leaving it to the wall clock made this assertion depend on how long the
+// process had been up.
+assert.ok(Math.abs(vt.get(100, 100) - 1000) < 1, `expected ~1000 px/s, got ${vt.get(100, 100)}`);
+// Holding still before letting go is a deliberate stop, not a flick: no
+// pointermove fires while the finger rests, so by release the samples are old.
+assert.equal(vt.get(100, 500), 0, "a pause before release must not read as a throw");
+assert.ok(vt.get(1000, 500) > 0, "the samples are still there, just too old to count");
 vt.reset();
 assert.equal(vt.get(), 0);
 // only the recent window counts: an old sample must fall out of the buffer

@@ -60,7 +60,13 @@ export function spring(opts: {
   onFrame: (value: number) => void;
   onRest?: () => void;
 }): SpringHandle {
-  const { response = 0.4, damping = 1, onFrame, onRest } = opts;
+  const { onFrame, onRest } = opts;
+  // Reduced motion keeps the feedback but takes the travel out of it: the value
+  // still settles rather than jumping, it just stops covering ground.
+  const reduced =
+    typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const response = reduced ? 0.1 : (opts.response ?? 0.4);
+  const damping = reduced ? 1 : (opts.damping ?? 1);
   const omega = (2 * Math.PI) / response;
   const k = omega * omega;
   const c = 2 * damping * omega;
@@ -124,9 +130,14 @@ export class VelocityTracker {
     if (this.samples.length > 6) this.samples.shift();
   }
 
-  /** px per second. */
-  get(): number {
-    const s = this.samples;
+  /**
+   * px per second, over the last `maxAge` ms only. Holding still before release
+   * fires no pointermove events, so without the age cut the tracker would still
+   * be holding the samples from the fast part of the drag and report a flick
+   * the user deliberately ended.
+   */
+  get(maxAge = 100, now = performance.now()): number {
+    const s = this.samples.filter((x) => now - x.t <= maxAge);
     if (s.length < 2) return 0;
     const first = s[0];
     const last = s[s.length - 1];

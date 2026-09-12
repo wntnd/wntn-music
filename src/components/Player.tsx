@@ -28,6 +28,7 @@ import {
   VelocityTracker,
   type SpringHandle,
 } from "../lib/motion";
+import { lockScroll } from "../lib/scroll-lock";
 import { usePlayer } from "../hooks/usePlayer";
 import { useVirtualList } from "../hooks/useVirtualList";
 import { trackApi } from "../lib/api";
@@ -42,21 +43,32 @@ export default function Player() {
 
   // a collapsed player must never leave the page scroll-locked
   useEffect(() => {
-    document.body.style.overflow = expanded ? "hidden" : "";
-    return () => {
-      document.body.style.overflow = "";
-    };
+    if (!expanded) return;
+    return lockScroll();
   }, [expanded]);
 
   // Keyboard transport. Typing in a field must never skip a track, so anything
   // originating in an input, textarea or contenteditable is left alone.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") return setExpanded(false);
       // target is only an Element when something focusable has focus — it can
       // also be the Document, which has no closest()
       const el = e.target instanceof Element ? e.target : null;
-      if (el?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (e.key === "Escape") {
+        // A dialog owns Escape while it is open. Collapsing the player from
+        // under it dismissed two things on one press.
+        if (!document.querySelector("[role='dialog']")) setExpanded(false);
+        return;
+      }
+      // Typing keeps its keys, and so do the app's own sliders: the seek bar
+      // handles the arrows itself, so seeking here too moved ten seconds.
+      if (el?.closest("input, textarea, select, [contenteditable='true'], [role='slider']"))
+        return;
+      // Space and Enter belong to whatever control has focus. Taking Space here
+      // meant a focused button could not be pressed from the keyboard at all —
+      // the preventDefault below swallowed its activation.
+      if ((e.key === " " || e.key === "Enter") && el?.closest("button, a, summary, [role='button']"))
+        return;
       if (e.metaKey || e.ctrlKey || e.altKey || !current) return;
       switch (e.key) {
         case " ":
@@ -231,8 +243,20 @@ function SeekBar({ tall = false }: { tall?: boolean }) {
       }}
       onPointerCancel={() => setScrub(null)}
       onKeyDown={(e) => {
-        if (e.key === "ArrowRight") seekBy(5);
-        if (e.key === "ArrowLeft") seekBy(-5);
+        // A focused slider must not also scroll the page, and the standard
+        // slider keys are cheap to honour once the arrows are here anyway.
+        const step: Record<string, () => void> = {
+          ArrowRight: () => seekBy(5),
+          ArrowLeft: () => seekBy(-5),
+          PageUp: () => seekBy(30),
+          PageDown: () => seekBy(-30),
+          Home: () => seek(0),
+          End: () => seek(Math.max(0, duration - 1)),
+        };
+        const run = step[e.key];
+        if (!run || !duration) return;
+        e.preventDefault();
+        run();
       }}
       role="slider"
       aria-label="перемотка"

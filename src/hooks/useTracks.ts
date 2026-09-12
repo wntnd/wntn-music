@@ -61,8 +61,16 @@ export function useTracks(opts: { artist?: string; sort?: "new" | "popular" } = 
     }
   }, [hasMore, artist, sort]);
 
+  // React 19 would run a cleanup returned from a callback ref; React 18 ignores
+  // it. Returning one here left every observer connected, so each page loaded
+  // added another watcher of the same sentinel, all still calling loadMore.
+  const observer = useRef<IntersectionObserver | null>(null);
+  useEffect(() => () => observer.current?.disconnect(), []);
+
   const sentinelRef = useCallback(
     (node: HTMLElement | null) => {
+      observer.current?.disconnect();
+      observer.current = null;
       if (!node || !hasMore) return;
       const io = new IntersectionObserver(
         (entries) => {
@@ -72,7 +80,7 @@ export function useTracks(opts: { artist?: string; sort?: "new" | "popular" } = 
         { rootMargin: "600px" },
       );
       io.observe(node);
-      return () => io.disconnect();
+      observer.current = io;
     },
     [hasMore, loadMore],
   );

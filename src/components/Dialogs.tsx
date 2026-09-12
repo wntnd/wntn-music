@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { IconCheck, IconAlertTriangle, IconX } from "@tabler/icons-react";
+import { lockScroll } from "../lib/scroll-lock";
 
 // App-wide styled replacements for window.confirm / window.prompt / window.alert.
 // Promise-based: const ok = await confirm("удалить?"); const v = await prompt("название", old);
@@ -146,6 +147,9 @@ function DialogCard({
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // the page used to keep scrolling behind the card, which on a phone reads
+    // as the dialog being stuck to a moving background
+    const unlock = lockScroll();
     // focus goes into the dialog and comes back to where it was on close
     const returnTo = document.activeElement as HTMLElement | null;
     (inputRef.current ?? cardRef.current?.querySelector<HTMLElement>("button"))?.focus();
@@ -171,6 +175,7 @@ function DialogCard({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      unlock();
       returnTo?.focus?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

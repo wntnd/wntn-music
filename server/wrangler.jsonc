@@ -1,10 +1,22 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Build-only config: `pnpm build` at the repo root uses it to bundle the API
-  // into dist/_worker.js. Bindings, vars and the domain live in the Pages
-  // config at the repo root — this file deploys nothing.
+  // Local API development (`pnpm dev`) and the bundle step of the root
+  // `pnpm build`. Production config — vars, domain, the real Hyperdrive — is
+  // the Pages config at the repo root; this file deploys nothing.
   "name": "wntn-music-bundle",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+
+  // `wrangler dev` needs the bindings to exist; plain vars come from .dev.vars
+  // so this file carries no environment of its own to drift from the root one.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "wntn-music" }],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "dfcf8b01face458da95d56b5ea69ad23",
+      // dev never reaches the id: it connects here instead
+      "localConnectionString": "postgres://wntn:wntn@127.0.0.1:5432/wntn?sslmode=disable"
+    }
+  ]
 }
